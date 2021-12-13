@@ -32,6 +32,11 @@ set(FDBCLIENT_SRCS
   ClientKnobs.cpp
   ClientKnobs.h
   ClientLogEvents.h
+  ClientProxy.actor.cpp
+  ClientProxy.actor.h
+  ClientProxyInterface.h
+  ClientProxyStub.cpp
+  ClientProxyStub.h
   ClientVersion.h
   ClientWorkerInterface.h
   ClusterConnectionFile.actor.cpp

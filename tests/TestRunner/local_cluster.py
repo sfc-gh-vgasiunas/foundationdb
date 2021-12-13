@@ -59,7 +59,8 @@ logdir = {logdir}
     valid_letters_for_secret = string.ascii_letters + string.digits
 
     def __init__(self, basedir: str, fdbserver_binary: str, fdbmonitor_binary: str,
-                 fdbcli_binary: str, process_number: int, create_config=True, port=None, ip_address=None):
+                 fdbcli_binary: str, process_number: int, create_config=True, port=None, ip_address=None,
+                 start_proxy = False):
         self.basedir = Path(basedir)
         self.fdbserver_binary = Path(fdbserver_binary)
         self.fdbmonitor_binary = Path(fdbmonitor_binary)
@@ -79,6 +80,7 @@ logdir = {logdir}
         self.running = False
         self.process = None
         self.fdbmonitor_logfile = None
+        self.proxy_url = ""
         if create_config:
             with open(self.etc.joinpath('fdb.cluster'), 'x') as f:
                 random_string = lambda len : ''.join(random.choice(LocalCluster.valid_letters_for_secret) for i in range(len))
@@ -88,21 +90,26 @@ logdir = {logdir}
                     ip_addr=self.ip_address,
                     server_port=self.port
                 ))
-                with open(self.etc.joinpath('foundationdb.conf'), 'x') as f:
-                    f.write(LocalCluster.configuration_template.format(
-                        etcdir=self.etc,
-                        fdbserver_bin=self.fdbserver_binary,
-                        datadir=self.data,
-                        logdir=self.log
-                    ))
-                    # By default, the cluster only has one process
-                    # If a port number is given and process_number > 1, we will use subsequent numbers
-                    # E.g., port = 4000, process_number = 5
-                    # Then 4000,4001,4002,4003,4004 will be used as ports
-                    # If port number is not given, we will randomly pick free ports
-                    for index, _ in enumerate(range(process_number)):
-                        f.write('[fdbserver.{server_port}]\n'.format(server_port=self.port))
-                        self.port = get_free_port() if port is None else str(int(self.port) + 1)
+            with open(self.etc.joinpath('foundationdb.conf'), 'x') as f:
+                f.write(LocalCluster.configuration_template.format(
+                    etcdir=self.etc,
+                    fdbserver_bin=self.fdbserver_binary,
+                    datadir=self.data,
+                    logdir=self.log
+                ))
+                # By default, the cluster only has one process
+                # If a port number is given and process_number > 1, we will use subsequent numbers
+                # E.g., port = 4000, process_number = 5
+                # Then 4000,4001,4002,4003,4004 will be used as ports
+                # If port number is not given, we will randomly pick free ports
+                for index, _ in enumerate(range(process_number)):
+                    f.write('[fdbserver.{server_port}]\n'.format(server_port=self.port))
+                    self.port = get_free_port() if port is None else str(int(self.port) + 1)
+                # If requested start one more fdbserver process for a client proxy
+                if start_proxy:
+                    f.write('[fdbserver.{server_port}]\n'.format(server_port=self.port))
+                    f.write('class = client_proxy\n')
+                    self.proxy_url = '127.0.0.1:{server_port}'.format(server_port=self.port)
 
     def __enter__(self):
         assert not self.running, "Can't start a server that is already running"

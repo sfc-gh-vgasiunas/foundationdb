@@ -1,5 +1,5 @@
 /*
- * LocalClientAPI.cpp
+ * ClientProxy.actor.h
  *
  * This source file is part of the FoundationDB open source project
  *
@@ -18,16 +18,24 @@
  * limitations under the License.
  */
 
-#include "fdbclient/LocalClientAPI.h"
-#include "fdbclient/ThreadSafeTransaction.h"
-#include "fdbclient/ClientProxyStub.h"
+#pragma once
+#if defined(NO_INTELLISENSE) && !defined(FDBCLIENT_CLIENTPROXY_ACTOR_G_H)
+#define FDBCLIENT_CLIENTPROXY_ACTOR_G_H
+#include "fdbclient/ClientProxy.actor.g.h"
+#elif !defined(FDBCLIENT_CLIENTPROXY_ACTOR_H)
+#define FDBCLIENT_CLIENTPROXY_ACTOR_H
 
-IClientApi* getLocalClientAPI() {
-	static IClientApi* api = new ThreadSafeApi();
-	return api;
+#include "flow/flow.h"
+#include "fdbclient/CoordinationInterface.h"
+#include "fdbclient/ClientProxyInterface.h"
+#include "flow/actorcompiler.h"
+
+namespace ClientProxy {
+
+ACTOR Future<Void> proxyServer(ClientProxyInterface interface,
+                               Reference<IClusterConnectionRecord> connRecord,
+                               LocalityData clientLocality);
+
 }
 
-IClientApi* getClientProxyAPI() {
-	static IClientApi* api = new ClientProxyAPIStub();
-	return api;
-}
+#endif

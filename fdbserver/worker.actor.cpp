@@ -49,6 +49,7 @@
 #include "fdbserver/LocalConfiguration.h"
 #include "fdbclient/MonitorLeader.h"
 #include "fdbclient/ClientWorkerInterface.h"
+#include "fdbclient/ClientProxy.actor.h"
 #include "flow/Profiler.h"
 #include "flow/ThreadHelper.actor.h"
 #include "flow/Trace.h"
@@ -1662,6 +1663,11 @@ ACTOR Future<Void> workerServer(Reference<IClusterConnectionRecord> connRecord,
 
 		TraceEvent("RecoveriesComplete", interf.id());
 
+		// TODO: rely on a proper role recruitment process
+		if (initialClass == ProcessClass::ClientProxyClass) {
+			interf.clientProxy.send(InitializeClientProxyRequest());
+		}
+
 		loop choose {
 			when(UpdateServerDBInfoRequest req = waitNext(interf.updateServerDBInfo.getFuture())) {
 				ServerDBInfo localInfo = BinaryReader::fromStringRef<ServerDBInfo>(
@@ -2137,6 +2143,21 @@ ACTOR Future<Void> workerServer(Reference<IClusterConnectionRecord> connRecord,
 				errorForwarders.add(
 				    zombie(recruited,
 				           forwardError(errors, Role::LOG_ROUTER, recruited.id(), logRouter(recruited, req, dbInfo))));
+				req.reply.send(recruited);
+			}
+			when(InitializeClientProxyRequest req = waitNext(interf.clientProxy.getFuture())) {
+				LocalLineage _;
+				getCurrentLineage()->modify(&RoleLineage::role) = ProcessClass::ClusterRole::ClientProxy;
+				ClientProxyInterface recruited(locality);
+				recruited.initServerEndpoints();
+
+				std::map<std::string, std::string> details;
+				errorForwarders.add(zombie(recruited,
+				                           forwardError(errors,
+				                                        Role::CLIENT_PROXY,
+				                                        recruited.id(),
+				                                        ClientProxy::proxyServer(recruited, connRecord, locality))));
+				startRole(Role::CLIENT_PROXY, recruited.id(), interf.id(), details);
 				req.reply.send(recruited);
 			}
 			when(CoordinationPingMessage m = waitNext(interf.coordinationPing.getFuture())) {
@@ -2707,3 +2728,4 @@ const Role Role::BLOB_WORKER("BlobWorker", "BW");
 const Role Role::STORAGE_CACHE("StorageCache", "SC");
 const Role Role::COORDINATOR("Coordinator", "CD");
 const Role Role::BACKUP("Backup", "BK");
+const Role Role::CLIENT_PROXY("ClientProxy", "PR");

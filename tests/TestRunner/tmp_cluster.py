@@ -11,7 +11,7 @@ from random import choice
 from pathlib import Path
 
 class TempCluster:
-    def __init__(self, build_dir: str, process_number: int = 1, port: str = None):
+    def __init__(self, build_dir: str, process_number: int = 1, port: str = None, start_proxy = False):
         self.build_dir = Path(build_dir).resolve()
         assert self.build_dir.exists(), "{} does not exist".format(build_dir)
         assert self.build_dir.is_dir(), "{} is not a directory".format(build_dir)
@@ -24,11 +24,14 @@ class TempCluster:
                                     self.build_dir.joinpath('bin', 'fdbmonitor'),
                                     self.build_dir.joinpath('bin', 'fdbcli'),
                                     process_number,
-                                    port = port)
+                                    port = port,
+                                    start_proxy = start_proxy)
         self.log = self.cluster.log
         self.etc = self.cluster.etc
         self.data = self.cluster.data
         self.tmp_dir = tmp_dir
+        if start_proxy:
+            self.proxy_url = self.cluster.proxy_url
 
     def __enter__(self):
         self.cluster.__enter__()
@@ -65,9 +68,10 @@ if __name__ == '__main__':
     parser.add_argument('--build-dir', '-b', metavar='BUILD_DIRECTORY', help='FDB build directory', required=True)
     parser.add_argument('cmd', metavar="COMMAND", nargs="+", help="The command to run")
     parser.add_argument('--process-number', '-p', help="Number of fdb processes running", type=int, default=1)
+    parser.add_argument('--start-proxy', '-P', help="Start FDB client proxy", action='store_true')
     args = parser.parse_args()
     errcode = 1
-    with TempCluster(args.build_dir, args.process_number) as cluster:
+    with TempCluster(args.build_dir, args.process_number, start_proxy = args.start_proxy) as cluster:
         print("log-dir: {}".format(cluster.log))
         print("etc-dir: {}".format(cluster.etc))
         print("data-dir: {}".format(cluster.data))
@@ -82,6 +86,8 @@ if __name__ == '__main__':
                 cmd_args.append(str(cluster.log))
             elif cmd == '@ETC_DIR@':
                 cmd_args.append(str(cluster.etc))
+            elif cmd == '@PROXY_URL@':
+                cmd_args.append(str(cluster.proxy_url))
             else:
                 cmd_args.append(cmd)
         env = dict(**os.environ)

@@ -25,4 +25,7 @@
 #include "fdbclient/IClientApi.h"
 
 IClientApi* getLocalClientAPI();
+
+IClientApi* getClientProxyAPI();
+
 #endif

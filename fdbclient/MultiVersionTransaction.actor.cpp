@@ -1665,11 +1665,17 @@ void MultiVersionApi::selectApiVersion(int apiVersion) {
 		ASSERT(localClient);
 	}
 
+	if (!proxyClient) {
+		proxyClient = makeReference<ClientInfo>(getClientProxyAPI());
+		ASSERT(proxyClient);
+	}
+
 	if (this->apiVersion != 0 && this->apiVersion != apiVersion) {
 		throw api_version_already_set();
 	}
 
 	localClient->api->selectApiVersion(apiVersion);
+	proxyClient->api->selectApiVersion(apiVersion);
 	this->apiVersion = apiVersion;
 }
 
@@ -1914,6 +1920,10 @@ void MultiVersionApi::setNetworkOptionInternal(FDBNetworkOptions::Option option,
 		// multiple client threads are not supported on windows.
 		threadCount = extractIntOption(value, 1, 1);
 #endif
+	} else if (option == FDBNetworkOptions::PROXY_URL) {
+		validateOption(value, true, false, false);
+		proxyUrl = value.get().toString();
+		proxyClient->api->setNetworkOption(option, value);
 	} else {
 		forwardOption = true;
 	}
@@ -1921,6 +1931,7 @@ void MultiVersionApi::setNetworkOptionInternal(FDBNetworkOptions::Option option,
 	if (forwardOption) {
 		MutexHolder holder(lock);
 		localClient->api->setNetworkOption(option, value);
+		proxyClient->api->setNetworkOption(option, value);
 
 		if (!bypassMultiClientApi) {
 			if (networkSetup) {
@@ -2110,6 +2121,13 @@ Reference<IDatabase> MultiVersionApi::createDatabase(const char* clusterFilePath
 		lock.leave();
 		throw network_not_setup();
 	}
+
+	if (!proxyUrl.empty()) {
+		lock.leave();
+		ASSERT(proxyClient);
+		return proxyClient->api->createDatabase("");
+	}
+
 	std::string clusterFile(clusterFilePath);
 
 	if (localClientDisabled) {

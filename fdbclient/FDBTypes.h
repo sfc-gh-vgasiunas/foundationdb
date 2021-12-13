@@ -638,6 +638,11 @@ struct GetRangeLimits {
 		return (rows >= 0 || rows == ROW_LIMIT_UNLIMITED) && (bytes >= 0 || bytes == BYTE_LIMIT_UNLIMITED) &&
 		       minRows >= 0 && (minRows <= rows || rows == ROW_LIMIT_UNLIMITED);
 	}
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, rows, minRows, bytes);
+	}
 };
 
 struct RangeResultRef : VectorRef<KeyValueRef> {

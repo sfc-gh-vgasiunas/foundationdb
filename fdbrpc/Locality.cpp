@@ -272,6 +272,13 @@ ProcessClass::Fitness ProcessClass::machineClassFitness(ClusterRole role) const 
 		default:
 			return ProcessClass::NeverAssign;
 		}
+	case ProcessClass::ClientProxy:
+		switch (_class) {
+		case ProcessClass::ClientProxy:
+			return ProcessClass::BestFit;
+		default:
+			return ProcessClass::NeverAssign;
+		}
 	default:
 		return ProcessClass::NeverAssign;
 	}

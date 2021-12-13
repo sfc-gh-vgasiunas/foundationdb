@@ -48,6 +48,7 @@ struct ProcessClass {
 		GrvProxyClass,
 		BlobManagerClass,
 		BlobWorkerClass,
+		ClientProxyClass,
 		InvalidClass = -1
 	};
 
@@ -76,6 +77,7 @@ struct ProcessClass {
 		StorageCache,
 		Backup,
 		Worker, // used for actor lineage tracking
+		ClientProxy,
 		NoRole
 	};
 	enum ClassSource { CommandLineSource, AutoSource, DBSource, InvalidSource = -1 };
@@ -112,6 +114,7 @@ public:
 		else if (s=="blob_worker") _class = BlobWorkerClass;
 		else if (s=="storage_cache") _class = StorageCacheClass;
 		else if (s=="backup") _class = BackupClass;
+		else if (s=="client_proxy") _class = ClientProxyClass;
 		else _class = InvalidClass;
 	}
 
@@ -141,6 +144,7 @@ public:
 		else if (classStr=="blob_worker") _class = BlobWorkerClass;
 		else if (classStr=="storage_cache") _class = StorageCacheClass;
 		else if (classStr=="backup") _class = BackupClass;
+		else if (classStr=="client_proxy") _class = ClientProxyClass;
 		else _class = InvalidClass;
 
 		if (sourceStr=="command_line") _source = CommandLineSource;
@@ -180,6 +184,7 @@ public:
 			case BlobWorkerClass: return "blob_worker";
 			case StorageCacheClass: return "storage_cache";
 			case BackupClass: return "backup";
+			case ClientProxyClass: return "client_proxy";
 			default: return "invalid";
 		}
 	}

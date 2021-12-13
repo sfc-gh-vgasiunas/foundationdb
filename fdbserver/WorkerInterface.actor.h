@@ -35,6 +35,7 @@
 #include "fdbclient/BlobWorkerInterface.h"
 #include "fdbclient/ClientBooleanParams.h"
 #include "fdbclient/StorageServerInterface.h"
+#include "fdbclient/ClientProxyInterface.h"
 #include "fdbserver/TesterInterface.actor.h"
 #include "fdbclient/FDBTypes.h"
 #include "fdbserver/LogSystemConfig.h"
@@ -60,6 +61,7 @@ struct WorkerInterface {
 	RequestStream<struct InitializeStorageRequest> storage;
 	RequestStream<struct InitializeLogRouterRequest> logRouter;
 	RequestStream<struct InitializeBackupRequest> backup;
+	RequestStream<struct InitializeClientProxyRequest> clientProxy;
 
 	RequestStream<struct LoadedPingRequest> debugPing;
 	RequestStream<struct CoordinationPingMessage> coordinationPing;
@@ -126,7 +128,8 @@ struct WorkerInterface {
 		           workerSnapReq,
 		           backup,
 		           updateServerDBInfo,
-		           configBroadcastInterface);
+		           configBroadcastInterface,
+		           clientProxy);
 	}
 };
 
@@ -731,6 +734,16 @@ struct InitializeBlobWorkerRequest {
 	}
 };
 
+struct InitializeClientProxyRequest {
+	constexpr static FileIdentifier file_identifier = 2735462;
+	ReplyPromise<struct ClientProxyInterface> reply;
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, reply);
+	}
+};
+
 struct TraceBatchDumpRequest {
 	constexpr static FileIdentifier file_identifier = 8184121;
 	ReplyPromise<Void> reply;
@@ -896,6 +909,7 @@ struct Role {
 	static const Role STORAGE_CACHE;
 	static const Role COORDINATOR;
 	static const Role BACKUP;
+	static const Role CLIENT_PROXY;
 
 	std::string roleName;
 	std::string abbreviation;
@@ -933,6 +947,8 @@ struct Role {
 			return BACKUP;
 		case ProcessClass::Worker:
 			return WORKER;
+		case ProcessClass::ClientProxy:
+			return CLIENT_PROXY;
 		case ProcessClass::NoRole:
 		default:
 			ASSERT(false);
