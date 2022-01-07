@@ -127,7 +127,7 @@ struct ExecOperationsRequest {
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, arena, clientID, transactionID, firstSeqNo, operations, reply);
+		serializer(ar, clientID, transactionID, firstSeqNo, operations, reply, arena);
 	}
 };
 

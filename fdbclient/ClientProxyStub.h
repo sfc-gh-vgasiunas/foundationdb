@@ -25,9 +25,13 @@
 #include "fdbclient/IClientApi.h"
 #include "fdbclient/ClientProxyInterface.h"
 #include <mutex>
+#include <atomic>
 
 struct ExecOperationsRequestRefCounted : public ClientProxy::ExecOperationsRequest,
                                          public ThreadSafeReferenceCounted<ExecOperationsRequestRefCounted> {};
+
+struct ClientProxyInterfaceRefCounted : public ClientProxyInterface,
+                                        public ThreadSafeReferenceCounted<ClientProxyInterfaceRefCounted> {};
 
 // An implementation of IDatabase that forwards API calls for execution on a client proxy
 class ClientProxyDatabaseStub : public IDatabase, public ThreadSafeReferenceCounted<ClientProxyDatabaseStub> {
@@ -51,8 +55,9 @@ private:
 	// Internal use only
 	ClientProxyDatabaseStub(std::string proxyUrl, int apiVersion);
 
-	ClientProxyInterface interface;
+	Reference<ClientProxyInterfaceRefCounted> interface;
 	uint64_t clientID;
+	std::atomic<uint64_t> txCounter;
 };
 
 // An implementation of ITransaction that forwards API calls for execution on a client proxy
@@ -60,7 +65,7 @@ class ClientProxyTransactionStub : public ITransaction,
                                    ThreadSafeReferenceCounted<ClientProxyTransactionStub>,
                                    NonCopyable {
 public:
-	explicit ClientProxyTransactionStub(ClientProxyDatabaseStub* db);
+	explicit ClientProxyTransactionStub(ClientProxyDatabaseStub* db, uint64_t txID);
 	~ClientProxyTransactionStub() override;
 
 	void cancel() override;

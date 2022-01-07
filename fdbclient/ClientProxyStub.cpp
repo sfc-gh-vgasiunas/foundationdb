@@ -23,13 +23,14 @@
 
 using namespace ClientProxy;
 
-// Users of ClientProxyTransactionStub might share Reference<ThreadSafe...> between different threads as long as they
-// don't call addRef (e.g. C API follows this). Therefore, it is unsafe to call (explicitly or implicitly) this->addRef
-// in any of these functions.
+ThreadFuture<ExecOperationsReply> sendExecRequest(Reference<ClientProxyInterfaceRefCounted> ifc,
+                                                  Reference<ExecOperationsRequestRefCounted> request) {
+	return onMainThread([ifc, request]() { return ifc->execOperations.getReply(*request); });
+}
 
 Reference<ITransaction> ClientProxyDatabaseStub::createTransaction() {
 	std::cout << "Creating proxy transaction " << std::endl;
-	return Reference<ITransaction>(new ClientProxyTransactionStub(this));
+	return Reference<ITransaction>(new ClientProxyTransactionStub(this, txCounter++));
 }
 
 void ClientProxyDatabaseStub::setOption(FDBDatabaseOptions::Option option, Optional<StringRef> value) {
@@ -64,17 +65,18 @@ ThreadFuture<ProtocolVersion> ClientProxyDatabaseStub::getServerProtocol(Optiona
 ClientProxyDatabaseStub::ClientProxyDatabaseStub(std::string proxyUrl, int apiVersion) {
 	std::cout << "Connecting to proxy " << proxyUrl << std::endl;
 	NetworkAddress proxyAddress = NetworkAddress::parse(proxyUrl);
-	interface.initClientEndpoints(proxyAddress);
+	interface = makeReference<ClientProxyInterfaceRefCounted>();
+	interface->initClientEndpoints(proxyAddress);
 	clientID = deterministicRandom()->randomUInt64();
+	txCounter = 0;
 }
 
 ClientProxyDatabaseStub::~ClientProxyDatabaseStub() {
 	std::cout << "Destroying proxy database" << std::endl;
 }
 
-ClientProxyTransactionStub::ClientProxyTransactionStub(ClientProxyDatabaseStub* db)
-  : db(Reference<ClientProxyDatabaseStub>::addRef(db)), transactionID(deterministicRandom()->randomUInt64()),
-    operationCounter(0) {}
+ClientProxyTransactionStub::ClientProxyTransactionStub(ClientProxyDatabaseStub* db, uint64_t txID)
+  : db(Reference<ClientProxyDatabaseStub>::addRef(db)), transactionID(txID), operationCounter(0) {}
 
 ClientProxyTransactionStub::~ClientProxyTransactionStub() {
 	std::cout << "Destroying proxy transaction" << std::endl;
@@ -97,17 +99,19 @@ void ClientProxyTransactionStub::addOperation(const Operation& op) {
 
 template <class ResType>
 ThreadFuture<typename ResType::value_type> ClientProxyTransactionStub::sendCurrExecRequest() {
+	using ValType = typename ResType::value_type;
 	ASSERT(currExecRequest.isValid());
 	Reference<ExecOperationsRequestRefCounted> request = this->currExecRequest;
 	currExecRequest.clear();
-	Reference<ClientProxyDatabaseStub> db = this->db;
-	std::cout << "Scheduling exec operations request to be sent" << std::endl;
-	return onMainThread([request, db]() -> Future<typename ResType::value_type> {
-		std::cout << "Sending proxy request" << std::endl;
-		return map(db->interface.execOperations.getReply(*request), [](const ExecOperationsReply& res) {
-			std::cout << "Reply from proxy received" << std::endl;
-			return std::get<ResType>(res.res).val;
-		});
+	Reference<ClientProxyInterfaceRefCounted> ifc = this->db->interface;
+	ThreadFuture<ExecOperationsReply> replyFuture = sendExecRequest(ifc, request);
+
+	return mapThreadFuture<ExecOperationsReply, ValType>(replyFuture, [](ErrorOr<ExecOperationsReply> reply) {
+		if (reply.isError()) {
+			return ErrorOr<ValType>(reply.getError());
+		} else {
+			return ErrorOr<ValType>(std::get<ResType>(reply.get().res).val);
+		}
 	});
 }
 

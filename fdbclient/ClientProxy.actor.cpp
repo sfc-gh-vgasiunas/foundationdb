@@ -68,7 +68,7 @@ ACTOR template <class ResultType, class T>
 Future<Void> executeAndReplyActor(ReplyPromise<ExecOperationsReply> reply, Future<T> f) {
 	try {
 		T result = wait(f);
-		reply.send(ExecOperationsReply{ OperationResult(ResultType{ result }) });
+		reply.send(ExecOperationsReply{ OperationResult(ResultType{ { result } }) });
 	} catch (Error& e) {
 		reply.sendError(e);
 	}

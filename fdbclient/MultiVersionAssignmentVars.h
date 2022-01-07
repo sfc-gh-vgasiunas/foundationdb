@@ -225,59 +225,6 @@ ThreadFuture<T> toThreadFuture(Reference<FdbCApi> api,
 }
 
 template <class S, class T>
-class MapSingleAssignmentVar final : public ThreadSingleAssignmentVar<T>, ThreadCallback {
-public:
-	MapSingleAssignmentVar(ThreadFuture<S> source, std::function<ErrorOr<T>(ErrorOr<S>)> mapValue)
-	  : source(source), mapValue(mapValue) {
-		ThreadSingleAssignmentVar<T>::addref();
-
-		int userParam;
-		source.callOrSetAsCallback(this, userParam, 0);
-	}
-
-	void cancel() override {
-		source.getPtr()->addref(); // Cancel will delref our future, but we don't want to destroy it until this callback
-		                           // gets destroyed
-		source.getPtr()->cancel();
-		ThreadSingleAssignmentVar<T>::cancel();
-	}
-
-	void cleanupUnsafe() override {
-		source.getPtr()->releaseMemory();
-		ThreadSingleAssignmentVar<T>::cleanupUnsafe();
-	}
-
-	bool canFire(int notMadeActive) const override { return true; }
-
-	void fire(const Void& unused, int& userParam) override {
-		sendResult(mapValue(source.get()));
-		ThreadSingleAssignmentVar<T>::delref();
-	}
-
-	void error(const Error& e, int& userParam) override {
-		sendResult(mapValue(source.getError()));
-		ThreadSingleAssignmentVar<T>::delref();
-	}
-
-private:
-	ThreadFuture<S> source;
-	const std::function<ErrorOr<T>(ErrorOr<S>)> mapValue;
-
-	void sendResult(ErrorOr<T> result) {
-		if (result.isError()) {
-			ThreadSingleAssignmentVar<T>::sendError(result.getError());
-		} else {
-			ThreadSingleAssignmentVar<T>::send(result.get());
-		}
-	}
-};
-
-template <class S, class T>
-ThreadFuture<T> mapThreadFuture(ThreadFuture<S> source, std::function<ErrorOr<T>(ErrorOr<S>)> mapValue) {
-	return ThreadFuture<T>(new MapSingleAssignmentVar<S, T>(source, mapValue));
-}
-
-template <class S, class T>
 class FlatMapSingleAssignmentVar final : public ThreadSingleAssignmentVar<T>, ThreadCallback {
 public:
 	FlatMapSingleAssignmentVar(ThreadFuture<S> source, std::function<ErrorOr<ThreadFuture<T>>(ErrorOr<S>)> mapValue)
