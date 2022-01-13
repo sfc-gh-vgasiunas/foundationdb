@@ -133,15 +133,16 @@ public:
 private:
 	void createExecRequest();
 	void addOperation(const ClientProxy::Operation& op);
-
+	ThreadFuture<ClientProxy::ExecOperationsReply> sendCurrExecRequest();
 	template <class ResType>
-	ThreadFuture<typename ResType::value_type> sendCurrExecRequest();
+	ThreadFuture<typename ResType::value_type> sendAndGetValue();
 
 	std::mutex mutex;
 	Reference<ExecOperationsRequestRefCounted> currExecRequest;
 	Reference<ClientProxyDatabaseStub> db;
 	uint64_t transactionID;
 	int32_t operationCounter;
+	std::atomic<Version> committedVersion;
 };
 
 // An implementation of IClientApi that serializes operations onto the network thread and interacts with the lower-level

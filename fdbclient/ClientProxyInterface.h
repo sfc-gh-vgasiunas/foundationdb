@@ -84,8 +84,78 @@ struct CommitOp {
 	void serialize(Ar& ar) {}
 };
 
-using Operation = std::variant<GetOp, GetRangeOp, SetOp, CommitOp>;
-enum OperationType { OP_GET, OP_GETRANGE, OP_SET, OP_COMMIT };
+struct SetOptionOp {
+	constexpr static FileIdentifier file_identifier = 5789865;
+
+	int optionId;
+	Optional<ValueRef> value;
+
+	SetOptionOp() {}
+	SetOptionOp(Arena& ar, int optionId, Optional<ValueRef> value) : optionId(optionId), value(ar, value) {}
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, optionId, value);
+	}
+};
+
+struct ResetOp {
+	constexpr static FileIdentifier file_identifier = 5789866;
+
+	template <class Ar>
+	void serialize(Ar& ar) {}
+};
+
+struct ClearOp {
+	constexpr static FileIdentifier file_identifier = 5789867;
+
+	KeyRef key;
+
+	ClearOp() {}
+	ClearOp(Arena& ar, KeyRef key) : key(ar, key) {}
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, key);
+	}
+};
+
+struct ClearRangeOp {
+	constexpr static FileIdentifier file_identifier = 5789868;
+
+	KeyRef begin;
+	KeyRef end;
+
+	ClearRangeOp() {}
+	ClearRangeOp(Arena& ar, KeyRef begin, KeyRef end) : begin(ar, begin), end(ar, end) {}
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, begin, end);
+	}
+};
+
+struct GetReadVersionOp {
+	constexpr static FileIdentifier file_identifier = 5789869;
+
+	template <class Ar>
+	void serialize(Ar& ar) {}
+};
+
+using Operation =
+    std::variant<GetOp, GetRangeOp, SetOp, CommitOp, SetOptionOp, ResetOp, ClearOp, ClearRangeOp, GetReadVersionOp>;
+
+enum OperationType {
+	OP_GET,
+	OP_GETRANGE,
+	OP_SET,
+	OP_COMMIT,
+	OP_SETOPTION,
+	OP_RESET,
+	OP_CLEAR,
+	OP_CLEARRANGE,
+	OP_GETREADVERSION
+};
 
 template <class ValT, int file_id>
 struct ResultTypeBase {
@@ -102,8 +172,9 @@ struct ResultTypeBase {
 struct VoidResult : public ResultTypeBase<Void, 9572646> {};
 struct GetResult : public ResultTypeBase<Optional<Value>, 9572647> {};
 struct GetRangeResult : public ResultTypeBase<RangeResult, 9572648> {};
+struct Int64Result : public ResultTypeBase<int64_t, 9572649> {};
 
-using OperationResult = std::variant<VoidResult, GetResult, GetRangeResult>;
+using OperationResult = std::variant<VoidResult, GetResult, GetRangeResult, Int64Result>;
 
 struct ExecOperationsReply {
 	constexpr static FileIdentifier file_identifier = 1534762;

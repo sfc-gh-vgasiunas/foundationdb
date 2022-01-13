@@ -23,30 +23,35 @@
 
 using namespace ClientProxy;
 
+#define UNIMPLEMENTED_OPERATION()                                                                                      \
+	std::cout << "Unimplemented proxy operation called: " << __func__ << std::endl;                                    \
+	std::cout.flush();                                                                                                 \
+	throw unsupported_operation();
+
 ThreadFuture<ExecOperationsReply> sendExecRequest(Reference<ClientProxyInterfaceRefCounted> ifc,
                                                   Reference<ExecOperationsRequestRefCounted> request) {
 	return onMainThread([ifc, request]() { return ifc->execOperations.getReply(*request); });
 }
 
 Reference<ITransaction> ClientProxyDatabaseStub::createTransaction() {
-	std::cout << "Creating proxy transaction " << std::endl;
+	// std::cout << "Creating proxy transaction " << std::endl;
 	return Reference<ITransaction>(new ClientProxyTransactionStub(this, txCounter++));
 }
 
 void ClientProxyDatabaseStub::setOption(FDBDatabaseOptions::Option option, Optional<StringRef> value) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 ThreadFuture<int64_t> ClientProxyDatabaseStub::rebootWorker(const StringRef& address, bool check, int duration) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 ThreadFuture<Void> ClientProxyDatabaseStub::forceRecoveryWithDataLoss(const StringRef& dcid) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 ThreadFuture<Void> ClientProxyDatabaseStub::createSnapshot(const StringRef& uid, const StringRef& snapshot_command) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 // Return the main network thread busyness
@@ -59,7 +64,7 @@ double ClientProxyDatabaseStub::getMainThreadBusyness() {
 // If an expected version is given, the future won't return until the protocol version is different than expected
 // Note: this will never return if the server is running a protocol from FDB 5.0 or older
 ThreadFuture<ProtocolVersion> ClientProxyDatabaseStub::getServerProtocol(Optional<ProtocolVersion> expectedVersion) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 ClientProxyDatabaseStub::ClientProxyDatabaseStub(std::string proxyUrl, int apiVersion) {
@@ -76,15 +81,16 @@ ClientProxyDatabaseStub::~ClientProxyDatabaseStub() {
 }
 
 ClientProxyTransactionStub::ClientProxyTransactionStub(ClientProxyDatabaseStub* db, uint64_t txID)
-  : db(Reference<ClientProxyDatabaseStub>::addRef(db)), transactionID(txID), operationCounter(0) {}
+  : db(Reference<ClientProxyDatabaseStub>::addRef(db)), transactionID(txID), operationCounter(0),
+    committedVersion(invalidVersion) {}
 
 ClientProxyTransactionStub::~ClientProxyTransactionStub() {
-	std::cout << "Destroying proxy transaction" << std::endl;
+	// std::cout << "Destroying proxy transaction" << std::endl;
 }
 
 void ClientProxyTransactionStub::createExecRequest() {
 	if (!currExecRequest.isValid()) {
-		std::cout << "Creating exec operations request " << std::endl;
+		// std::cout << "Creating exec operations request " << std::endl;
 		currExecRequest = makeReference<ExecOperationsRequestRefCounted>();
 		currExecRequest->clientID = db->clientID;
 		currExecRequest->transactionID = transactionID;
@@ -97,15 +103,18 @@ void ClientProxyTransactionStub::addOperation(const Operation& op) {
 	operationCounter++;
 }
 
-template <class ResType>
-ThreadFuture<typename ResType::value_type> ClientProxyTransactionStub::sendCurrExecRequest() {
-	using ValType = typename ResType::value_type;
+ThreadFuture<ExecOperationsReply> ClientProxyTransactionStub::sendCurrExecRequest() {
 	ASSERT(currExecRequest.isValid());
 	Reference<ExecOperationsRequestRefCounted> request = this->currExecRequest;
 	currExecRequest.clear();
 	Reference<ClientProxyInterfaceRefCounted> ifc = this->db->interface;
-	ThreadFuture<ExecOperationsReply> replyFuture = sendExecRequest(ifc, request);
+	return sendExecRequest(ifc, request);
+}
 
+template <class ResType>
+ThreadFuture<typename ResType::value_type> ClientProxyTransactionStub::sendAndGetValue() {
+	ThreadFuture<ExecOperationsReply> replyFuture = sendCurrExecRequest();
+	using ValType = typename ResType::value_type;
 	return mapThreadFuture<ExecOperationsReply, ValType>(replyFuture, [](ErrorOr<ExecOperationsReply> reply) {
 		if (reply.isError()) {
 			return ErrorOr<ValType>(reply.getError());
@@ -116,47 +125,50 @@ ThreadFuture<typename ResType::value_type> ClientProxyTransactionStub::sendCurrE
 }
 
 void ClientProxyTransactionStub::cancel() {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 void ClientProxyTransactionStub::setVersion(Version v) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 ThreadFuture<Version> ClientProxyTransactionStub::getReadVersion() {
-	throw unsupported_operation();
+	std::unique_lock<std::mutex> l(mutex);
+	createExecRequest();
+	addOperation(Operation(GetReadVersionOp()));
+	return sendAndGetValue<Int64Result>();
 }
 
 ThreadFuture<Optional<Value>> ClientProxyTransactionStub::get(const KeyRef& key, bool snapshot) {
 	std::unique_lock<std::mutex> l(mutex);
 	createExecRequest();
 	addOperation(Operation(GetOp(currExecRequest->arena, key, snapshot)));
-	return sendCurrExecRequest<GetResult>();
+	return sendAndGetValue<GetResult>();
 }
 
 ThreadFuture<Key> ClientProxyTransactionStub::getKey(const KeySelectorRef& key, bool snapshot) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 ThreadFuture<int64_t> ClientProxyTransactionStub::getEstimatedRangeSizeBytes(const KeyRangeRef& keys) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 ThreadFuture<Standalone<VectorRef<KeyRef>>> ClientProxyTransactionStub::getRangeSplitPoints(const KeyRangeRef& range,
                                                                                             int64_t chunkSize) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 ThreadFuture<Standalone<VectorRef<KeyRangeRef>>> ClientProxyTransactionStub::getBlobGranuleRanges(
     const KeyRangeRef& keyRange) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 ThreadResult<RangeResult> ClientProxyTransactionStub::readBlobGranules(const KeyRangeRef& keyRange,
                                                                        Version beginVersion,
                                                                        Optional<Version> readVersion,
                                                                        ReadBlobGranuleContext granuleContext) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 ThreadFuture<RangeResult> ClientProxyTransactionStub::getRange(const KeySelectorRef& begin,
@@ -175,7 +187,7 @@ ThreadFuture<RangeResult> ClientProxyTransactionStub::getRange(const KeySelector
 	std::unique_lock<std::mutex> l(mutex);
 	createExecRequest();
 	addOperation(Operation(GetRangeOp(currExecRequest->arena, begin, end, limits, snapshot, reverse)));
-	return sendCurrExecRequest<GetRangeResult>();
+	return sendAndGetValue<GetRangeResult>();
 }
 
 ThreadFuture<RangeResult> ClientProxyTransactionStub::getRangeAndFlatMap(const KeySelectorRef& begin,
@@ -184,19 +196,19 @@ ThreadFuture<RangeResult> ClientProxyTransactionStub::getRangeAndFlatMap(const K
                                                                          GetRangeLimits limits,
                                                                          bool snapshot,
                                                                          bool reverse) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 ThreadFuture<Standalone<VectorRef<const char*>>> ClientProxyTransactionStub::getAddressesForKey(const KeyRef& key) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 void ClientProxyTransactionStub::addReadConflictRange(const KeyRangeRef& keys) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 void ClientProxyTransactionStub::atomicOp(const KeyRef& key, const ValueRef& value, uint32_t operationType) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 void ClientProxyTransactionStub::set(const KeyRef& key, const ValueRef& value) {
@@ -206,54 +218,72 @@ void ClientProxyTransactionStub::set(const KeyRef& key, const ValueRef& value) {
 }
 
 void ClientProxyTransactionStub::clear(const KeyRangeRef& range) {
-	throw unsupported_operation();
+	std::unique_lock<std::mutex> l(mutex);
+	createExecRequest();
+	addOperation(Operation(ClearRangeOp(currExecRequest->arena, range.begin, range.end)));
 }
 
 void ClientProxyTransactionStub::clear(const KeyRef& begin, const KeyRef& end) {
-	throw unsupported_operation();
+	std::unique_lock<std::mutex> l(mutex);
+	createExecRequest();
+	addOperation(Operation(ClearRangeOp(currExecRequest->arena, begin, end)));
 }
 
 void ClientProxyTransactionStub::clear(const KeyRef& key) {
-	throw unsupported_operation();
+	std::unique_lock<std::mutex> l(mutex);
+	createExecRequest();
+	addOperation(Operation(ClearOp(currExecRequest->arena, key)));
 }
 
 ThreadFuture<Void> ClientProxyTransactionStub::watch(const KeyRef& key) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 void ClientProxyTransactionStub::addWriteConflictRange(const KeyRangeRef& keys) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 ThreadFuture<Void> ClientProxyTransactionStub::commit() {
 	std::unique_lock<std::mutex> l(mutex);
 	createExecRequest();
 	addOperation(Operation(CommitOp()));
-	return sendCurrExecRequest<VoidResult>();
+	ThreadFuture<ExecOperationsReply> replyFuture = sendCurrExecRequest();
+	return mapThreadFuture<ExecOperationsReply, Void>(replyFuture, [this](ErrorOr<ExecOperationsReply> reply) {
+		if (reply.isError()) {
+			return ErrorOr<Void>(reply.getError());
+		} else {
+			this->committedVersion = std::get<Int64Result>(reply.get().res).val;
+			return ErrorOr<Void>(Void());
+		}
+	});
 }
 
 Version ClientProxyTransactionStub::getCommittedVersion() {
-	throw unsupported_operation();
+	return committedVersion;
 }
 
 ThreadFuture<int64_t> ClientProxyTransactionStub::getApproximateSize() {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 ThreadFuture<Standalone<StringRef>> ClientProxyTransactionStub::getVersionstamp() {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 void ClientProxyTransactionStub::setOption(FDBTransactionOptions::Option option, Optional<StringRef> value) {
-	throw unsupported_operation();
+	std::unique_lock<std::mutex> l(mutex);
+	createExecRequest();
+	addOperation(Operation(SetOptionOp(currExecRequest->arena, option, value)));
 }
 
 ThreadFuture<Void> ClientProxyTransactionStub::onError(Error const& e) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 void ClientProxyTransactionStub::reset() {
-	throw unsupported_operation();
+	std::unique_lock<std::mutex> l(mutex);
+	createExecRequest();
+	addOperation(Operation(ResetOp()));
 }
 
 extern const char* getSourceVersion();
@@ -277,15 +307,15 @@ void ClientProxyAPIStub::setNetworkOption(FDBNetworkOptions::Option option, Opti
 }
 
 void ClientProxyAPIStub::setupNetwork() {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 void ClientProxyAPIStub::runNetwork() {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 void ClientProxyAPIStub::stopNetwork() {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }
 
 Reference<IDatabase> ClientProxyAPIStub::createDatabase(const char* clusterFilePath) {
@@ -293,5 +323,5 @@ Reference<IDatabase> ClientProxyAPIStub::createDatabase(const char* clusterFileP
 }
 
 void ClientProxyAPIStub::addNetworkThreadCompletionHook(void (*hook)(void*), void* hookParameter) {
-	throw unsupported_operation();
+	UNIMPLEMENTED_OPERATION();
 }

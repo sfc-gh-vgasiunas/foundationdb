@@ -96,9 +96,43 @@ void executeSetOp(const SetOp& op, Reference<ProxyTransaction> proxyTx) {
 	proxyTx->tx->set(op.key, op.value);
 }
 
+ACTOR Future<Void> executeCommitActor(ReplyPromise<ExecOperationsReply> reply, Reference<ProxyTransaction> proxyTx) {
+	try {
+		wait(proxyTx->tx->commit());
+		reply.send(ExecOperationsReply{ OperationResult(Int64Result{ { proxyTx->tx->getCommittedVersion() } }) });
+	} catch (Error& e) {
+		reply.sendError(e);
+	}
+	return Void();
+}
+
 void executeCommitOp(const CommitOp& op, Reference<ProxyTransaction> proxyTx) {
-	Future<Void> future = proxyTx->tx->commit();
-	replyAfterCompletion<VoidResult>(proxyTx, future);
+	proxyTx->execActors.push_back(executeCommitActor(proxyTx->currentReply, proxyTx));
+	proxyTx->currentReply.reset();
+}
+
+void executeSetOptionOp(const SetOptionOp& op, Reference<ProxyTransaction> proxyTx) {
+	proxyTx->tx->setOption((FDBTransactionOptions::Option)op.optionId, op.value);
+}
+
+void executeResetOp(const ResetOp& op, Reference<ProxyTransaction> proxyTx) {
+	proxyTx->tx->reset();
+}
+
+void executeClearOp(const ClearOp& op, Reference<ProxyTransaction> proxyTx) {
+	proxyTx->tx->clear(op.key);
+}
+
+void executeClearRangeOp(const ClearRangeOp& op, Reference<ProxyTransaction> proxyTx) {
+	if (op.begin > op.end)
+		throw inverted_range();
+
+	proxyTx->tx->clear(KeyRangeRef(op.begin, op.end));
+}
+
+void executeGetReadVersionOp(const GetReadVersionOp& op, Reference<ProxyTransaction> proxyTx) {
+	auto future = proxyTx->tx->getReadVersion();
+	replyAfterCompletion<Int64Result>(proxyTx, future);
 }
 
 void executeOperations(ProxyState* rpcProxyData,
@@ -128,6 +162,21 @@ void executeOperations(ProxyState* rpcProxyData,
 				break;
 			case OP_COMMIT:
 				executeCommitOp(std::get<OP_COMMIT>(op), proxyTx);
+				break;
+			case OP_SETOPTION:
+				executeSetOptionOp(std::get<OP_SETOPTION>(op), proxyTx);
+				break;
+			case OP_RESET:
+				executeResetOp(std::get<OP_RESET>(op), proxyTx);
+				break;
+			case OP_CLEAR:
+				executeClearOp(std::get<OP_CLEAR>(op), proxyTx);
+				break;
+			case OP_CLEARRANGE:
+				executeClearRangeOp(std::get<OP_CLEARRANGE>(op), proxyTx);
+				break;
+			case OP_GETREADVERSION:
+				executeGetReadVersionOp(std::get<OP_GETREADVERSION>(op), proxyTx);
 				break;
 			}
 		}
