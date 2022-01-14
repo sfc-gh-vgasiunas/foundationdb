@@ -62,6 +62,13 @@ struct ProxyState {
 		transactionMap[transactionID] = tx;
 		return tx;
 	}
+
+	void releaseTransaction(UID transactionID) {
+		auto iter = transactionMap.find(transactionID);
+		if (iter != transactionMap.end()) {
+			transactionMap.erase(iter);
+		}
+	}
 };
 
 ACTOR template <class ResultType, class T>
@@ -187,6 +194,10 @@ void executeOperations(ProxyState* rpcProxyData,
 }
 
 void handleExecOperationsRequest(ProxyState* rpcProxyData, const ExecOperationsRequest& request) {
+	for (uint64_t txID : request.releasedTransactions) {
+		rpcProxyData->releaseTransaction(UID(request.clientID, txID));
+	}
+
 	UID transactionID(request.clientID, request.transactionID);
 	Reference<ProxyTransaction> proxyTx = rpcProxyData->getTransaction(transactionID);
 

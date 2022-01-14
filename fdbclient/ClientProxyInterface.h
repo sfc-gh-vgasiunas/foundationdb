@@ -194,11 +194,12 @@ struct ExecOperationsRequest {
 	uint64_t transactionID;
 	uint32_t firstSeqNo;
 	std::vector<Operation> operations;
+	std::vector<uint64_t> releasedTransactions;
 	ReplyPromise<ExecOperationsReply> reply;
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, clientID, transactionID, firstSeqNo, operations, reply, arena);
+		serializer(ar, clientID, transactionID, firstSeqNo, operations, releasedTransactions, reply, arena);
 	}
 };
 

@@ -24,6 +24,7 @@
 
 #include "fdbclient/IClientApi.h"
 #include "fdbclient/ClientProxyInterface.h"
+#include "flow/ThreadSafeQueue.h"
 #include <mutex>
 #include <atomic>
 
@@ -49,7 +50,6 @@ public:
 	ThreadFuture<Void> forceRecoveryWithDataLoss(const StringRef& dcid) override;
 	ThreadFuture<Void> createSnapshot(const StringRef& uid, const StringRef& snapshot_command) override;
 
-private:
 	friend class ClientProxyTransactionStub;
 	friend class ClientProxyAPIStub;
 	// Internal use only
@@ -58,6 +58,7 @@ private:
 	Reference<ClientProxyInterfaceRefCounted> interface;
 	uint64_t clientID;
 	std::atomic<uint64_t> txCounter;
+	ThreadSafeQueue<uint64_t> releasedTransactions;
 };
 
 // An implementation of ITransaction that forwards API calls for execution on a client proxy

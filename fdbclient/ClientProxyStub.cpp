@@ -28,9 +28,17 @@ using namespace ClientProxy;
 	std::cout.flush();                                                                                                 \
 	throw unsupported_operation();
 
-ThreadFuture<ExecOperationsReply> sendExecRequest(Reference<ClientProxyInterfaceRefCounted> ifc,
+ThreadFuture<ExecOperationsReply> sendExecRequest(Reference<ClientProxyDatabaseStub> db,
                                                   Reference<ExecOperationsRequestRefCounted> request) {
-	return onMainThread([ifc, request]() { return ifc->execOperations.getReply(*request); });
+	return onMainThread([db, request]() {
+		while (true) {
+			Optional<uint64_t> t = db->releasedTransactions.pop();
+			if (!t.present())
+				break;
+			request->releasedTransactions.push_back(t.get());
+		}
+		return db->interface->execOperations.getReply(*request);
+	});
 }
 
 Reference<ITransaction> ClientProxyDatabaseStub::createTransaction() {
@@ -85,7 +93,7 @@ ClientProxyTransactionStub::ClientProxyTransactionStub(ClientProxyDatabaseStub* 
     committedVersion(invalidVersion) {}
 
 ClientProxyTransactionStub::~ClientProxyTransactionStub() {
-	// std::cout << "Destroying proxy transaction" << std::endl;
+	db->releasedTransactions.push(transactionID);
 }
 
 void ClientProxyTransactionStub::createExecRequest() {
@@ -107,8 +115,7 @@ ThreadFuture<ExecOperationsReply> ClientProxyTransactionStub::sendCurrExecReques
 	ASSERT(currExecRequest.isValid());
 	Reference<ExecOperationsRequestRefCounted> request = this->currExecRequest;
 	currExecRequest.clear();
-	Reference<ClientProxyInterfaceRefCounted> ifc = this->db->interface;
-	return sendExecRequest(ifc, request);
+	return sendExecRequest(db, request);
 }
 
 template <class ResType>
