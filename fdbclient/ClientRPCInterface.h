@@ -34,6 +34,7 @@ public:
 	virtual ~ClientRPCInterface() {}
 	virtual ThreadFuture<ClientProxy::ExecOperationsReply> executeOperations(ExecOperationsReference request) = 0;
 	virtual void releaseTransaction(uint64_t transaction) = 0;
+	virtual uint64_t getClientID() = 0;
 };
 
 #endif

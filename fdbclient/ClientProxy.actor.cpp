@@ -208,6 +208,18 @@ void executeOperations(ProxyState* rpcProxyData,
 	proxyTx->lastExecSeqNo += request.operations.size();
 }
 
+ProxyState* createProxyState(Reference<IClusterConnectionRecord> connRecord, LocalityData clientLocality) {
+	return new ProxyState(connRecord, clientLocality);
+}
+
+void destroyProxyState(ProxyState* proxyState) {
+	delete proxyState;
+}
+
+void releaseTransaction(ProxyState* proxyState, UID transactionID) {
+	proxyState->releaseTransaction(transactionID);
+}
+
 void handleExecOperationsRequest(ProxyState* rpcProxyData, const ExecOperationsRequest& request) {
 	for (uint64_t txID : request.releasedTransactions) {
 		rpcProxyData->releaseTransaction(UID(request.clientID, txID));
@@ -239,7 +251,6 @@ void handleExecOperationsRequest(ProxyState* rpcProxyData, const ExecOperationsR
 ACTOR Future<Void> proxyServer(ClientProxyInterface interface,
                                Reference<IClusterConnectionRecord> connRecord,
                                LocalityData clientLocality) {
-	state Database localDb;
 	state ProxyState proxyData(connRecord, clientLocality);
 	loop {
 		ExecOperationsRequest req = waitNext(interface.execOperations.getFuture());

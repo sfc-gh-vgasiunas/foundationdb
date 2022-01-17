@@ -30,6 +30,7 @@ public:
 		std::cout << "Connecting to proxy " << proxyUrl << std::endl;
 		NetworkAddress proxyAddress = NetworkAddress::parse(proxyUrl);
 		interface.initClientEndpoints(proxyAddress);
+		clientID = deterministicRandom()->randomUInt64();
 	}
 
 	ThreadFuture<ExecOperationsReply> executeOperations(ExecOperationsReference request) override {
@@ -46,9 +47,12 @@ public:
 
 	virtual void releaseTransaction(uint64_t transactionID) override { releasedTransactions.push(transactionID); }
 
+	virtual uint64_t getClientID() override { return clientID; }
+
 private:
 	ThreadSafeQueue<uint64_t> releasedTransactions;
 	ClientProxyInterface interface;
+	uint64_t clientID;
 };
 
 #define UNIMPLEMENTED_OPERATION()                                                                                      \
@@ -91,7 +95,7 @@ ThreadFuture<ProtocolVersion> ClientProxyDatabaseStub::getServerProtocol(Optiona
 }
 
 ClientProxyDatabaseStub::ClientProxyDatabaseStub(Reference<ClientRPCInterface> rpcInterface, int apiVersion)
-  : rpcInterface(rpcInterface), clientID(deterministicRandom()->randomUInt64()), txCounter(0) {}
+  : rpcInterface(rpcInterface), clientID(rpcInterface->getClientID()), txCounter(0) {}
 
 ClientProxyDatabaseStub::~ClientProxyDatabaseStub() {
 	std::cout << "Destroying proxy database" << std::endl;

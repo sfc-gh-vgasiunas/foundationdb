@@ -32,10 +32,20 @@
 
 namespace ClientProxy {
 
+struct ProxyState;
+
+ProxyState* createProxyState(Reference<IClusterConnectionRecord> connRecord, LocalityData clientLocality);
+
+void destroyProxyState(ProxyState* proxyState);
+
+void handleExecOperationsRequest(ProxyState* rpcProxyData, const ExecOperationsRequest& request);
+
+void releaseTransaction(ProxyState* proxyState, UID transactionID);
+
 ACTOR Future<Void> proxyServer(ClientProxyInterface interface,
                                Reference<IClusterConnectionRecord> connRecord,
                                LocalityData clientLocality);
 
-}
+} // namespace ClientProxy
 
 #endif

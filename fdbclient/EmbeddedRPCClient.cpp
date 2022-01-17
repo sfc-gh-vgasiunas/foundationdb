@@ -27,19 +27,26 @@ EmbeddedRPCClient::EmbeddedRPCClient(std::string connFilename) {
 	Reference<IClusterConnectionRecord> connFile =
 	    makeReference<ClusterConnectionFile>(ClusterConnectionFile::lookupClusterFileName(connFilename).first);
 	Reference<EmbeddedRPCClient> thisRef = Reference<EmbeddedRPCClient>::addRef(this);
-	proxyServerActor = onMainThread(
-	    [thisRef, connFile]() { return ClientProxy::proxyServer(thisRef->proxyInterface, connFile, LocalityData()); });
+	onMainThreadVoid(
+	    [thisRef, connFile]() { thisRef->proxyState = ClientProxy::createProxyState(connFile, LocalityData()); });
+}
+
+EmbeddedRPCClient::~EmbeddedRPCClient() {
+	ClientProxy::ProxyState* proxyState = this->proxyState;
+	onMainThreadVoid([proxyState]() { ClientProxy::destroyProxyState(proxyState); });
 }
 
 ThreadFuture<ClientProxy::ExecOperationsReply> EmbeddedRPCClient::executeOperations(ExecOperationsReference request) {
-	return onMainThread([this, request]() {
+	Reference<EmbeddedRPCClient> thisRef = Reference<EmbeddedRPCClient>::addRef(this);
+	return onMainThread([thisRef, request]() {
 		while (true) {
-			Optional<uint64_t> t = releasedTransactions.pop();
+			Optional<uint64_t> t = thisRef->releasedTransactions.pop();
 			if (!t.present())
 				break;
-			request->releasedTransactions.push_back(t.get());
+			ClientProxy::releaseTransaction(thisRef->proxyState, UID(CLIENT_ID, t.get()));
 		}
-		return proxyInterface.execOperations.getReply(*request);
+		ClientProxy::handleExecOperationsRequest(thisRef->proxyState, *request);
+		return request->reply.getFuture();
 	});
 }
 

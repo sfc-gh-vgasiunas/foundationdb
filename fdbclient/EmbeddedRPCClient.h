@@ -25,15 +25,21 @@
 #include "fdbclient/ClientRPCInterface.h"
 #include "flow/ThreadSafeQueue.h"
 
+namespace ClientProxy {
+struct ProxyState;
+}
+
 class EmbeddedRPCClient : public ClientRPCInterface {
 public:
+	static constexpr uint64_t CLIENT_ID = 1;
 	EmbeddedRPCClient(std::string connFilename);
+	~EmbeddedRPCClient() override;
 	ThreadFuture<ClientProxy::ExecOperationsReply> executeOperations(ExecOperationsReference request) override;
 	void releaseTransaction(uint64_t transaction) override;
+	uint64_t getClientID() override { return CLIENT_ID; }
 
 private:
-	ClientProxyInterface proxyInterface;
-	ThreadFuture<Void> proxyServerActor;
+	ClientProxy::ProxyState* proxyState;
 	ThreadSafeQueue<uint64_t> releasedTransactions;
 };
 
