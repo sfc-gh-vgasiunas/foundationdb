@@ -20,26 +20,42 @@
 
 #include "fdbclient/ClientProxyStub.h"
 #include "flow/IRandom.h"
+#include "flow/ThreadSafeQueue.h"
 
 using namespace ClientProxy;
+
+class ClientProxyRPCStub : public ClientRPCInterface {
+public:
+	ClientProxyRPCStub(std::string proxyUrl) {
+		std::cout << "Connecting to proxy " << proxyUrl << std::endl;
+		NetworkAddress proxyAddress = NetworkAddress::parse(proxyUrl);
+		interface.initClientEndpoints(proxyAddress);
+	}
+
+	~ClientProxyRPCStub() {}
+	ThreadFuture<ExecOperationsReply> executeOperations(ExecOperationsReference request) override {
+		return onMainThread([this, request]() {
+			while (true) {
+				Optional<uint64_t> t = releasedTransactions.pop();
+				if (!t.present())
+					break;
+				request->releasedTransactions.push_back(t.get());
+			}
+			return interface.execOperations.getReply(*request);
+		});
+	}
+
+	virtual void releaseTransaction(uint64_t transactionID) override { releasedTransactions.push(transactionID); }
+
+private:
+	ThreadSafeQueue<uint64_t> releasedTransactions;
+	ClientProxyInterface interface;
+};
 
 #define UNIMPLEMENTED_OPERATION()                                                                                      \
 	std::cout << "Unimplemented proxy operation called: " << __func__ << std::endl;                                    \
 	std::cout.flush();                                                                                                 \
 	throw unsupported_operation();
-
-ThreadFuture<ExecOperationsReply> sendExecRequest(Reference<ClientProxyDatabaseStub> db,
-                                                  Reference<ExecOperationsRequestRefCounted> request) {
-	return onMainThread([db, request]() {
-		while (true) {
-			Optional<uint64_t> t = db->releasedTransactions.pop();
-			if (!t.present())
-				break;
-			request->releasedTransactions.push_back(t.get());
-		}
-		return db->interface->execOperations.getReply(*request);
-	});
-}
 
 Reference<ITransaction> ClientProxyDatabaseStub::createTransaction() {
 	// std::cout << "Creating proxy transaction " << std::endl;
@@ -76,10 +92,7 @@ ThreadFuture<ProtocolVersion> ClientProxyDatabaseStub::getServerProtocol(Optiona
 }
 
 ClientProxyDatabaseStub::ClientProxyDatabaseStub(std::string proxyUrl, int apiVersion) {
-	std::cout << "Connecting to proxy " << proxyUrl << std::endl;
-	NetworkAddress proxyAddress = NetworkAddress::parse(proxyUrl);
-	interface = makeReference<ClientProxyInterfaceRefCounted>();
-	interface->initClientEndpoints(proxyAddress);
+	rpcInterface = makeReference<ClientProxyRPCStub>(proxyUrl);
 	clientID = deterministicRandom()->randomUInt64();
 	txCounter = 0;
 }
@@ -93,7 +106,7 @@ ClientProxyTransactionStub::ClientProxyTransactionStub(ClientProxyDatabaseStub* 
     committedVersion(invalidVersion) {}
 
 ClientProxyTransactionStub::~ClientProxyTransactionStub() {
-	db->releasedTransactions.push(transactionID);
+	db->getRpcInterface()->releaseTransaction(transactionID);
 }
 
 void ClientProxyTransactionStub::createExecRequest() {
@@ -115,7 +128,7 @@ ThreadFuture<ExecOperationsReply> ClientProxyTransactionStub::sendCurrExecReques
 	ASSERT(currExecRequest.isValid());
 	Reference<ExecOperationsRequestRefCounted> request = this->currExecRequest;
 	currExecRequest.clear();
-	return sendExecRequest(db, request);
+	return db->getRpcInterface()->executeOperations(request);
 }
 
 template <class ResType>

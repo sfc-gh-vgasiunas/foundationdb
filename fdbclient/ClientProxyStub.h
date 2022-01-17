@@ -24,15 +24,19 @@
 
 #include "fdbclient/IClientApi.h"
 #include "fdbclient/ClientProxyInterface.h"
-#include "flow/ThreadSafeQueue.h"
 #include <mutex>
 #include <atomic>
 
 struct ExecOperationsRequestRefCounted : public ClientProxy::ExecOperationsRequest,
                                          public ThreadSafeReferenceCounted<ExecOperationsRequestRefCounted> {};
+using ExecOperationsReference = Reference<ExecOperationsRequestRefCounted>;
 
-struct ClientProxyInterfaceRefCounted : public ClientProxyInterface,
-                                        public ThreadSafeReferenceCounted<ClientProxyInterfaceRefCounted> {};
+class ClientRPCInterface : public ThreadSafeReferenceCounted<ClientRPCInterface> {
+public:
+	virtual ~ClientRPCInterface() {}
+	virtual ThreadFuture<ClientProxy::ExecOperationsReply> executeOperations(ExecOperationsReference request) = 0;
+	virtual void releaseTransaction(uint64_t transaction) = 0;
+};
 
 // An implementation of IDatabase that forwards API calls for execution on a client proxy
 class ClientProxyDatabaseStub : public IDatabase, public ThreadSafeReferenceCounted<ClientProxyDatabaseStub> {
@@ -50,15 +54,18 @@ public:
 	ThreadFuture<Void> forceRecoveryWithDataLoss(const StringRef& dcid) override;
 	ThreadFuture<Void> createSnapshot(const StringRef& uid, const StringRef& snapshot_command) override;
 
+	Reference<ClientRPCInterface>& getRpcInterface() { return rpcInterface; }
+
 	friend class ClientProxyTransactionStub;
 	friend class ClientProxyAPIStub;
+
+private:
 	// Internal use only
 	ClientProxyDatabaseStub(std::string proxyUrl, int apiVersion);
 
-	Reference<ClientProxyInterfaceRefCounted> interface;
+	Reference<ClientRPCInterface> rpcInterface;
 	uint64_t clientID;
 	std::atomic<uint64_t> txCounter;
-	ThreadSafeQueue<uint64_t> releasedTransactions;
 };
 
 // An implementation of ITransaction that forwards API calls for execution on a client proxy
