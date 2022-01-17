@@ -142,8 +142,45 @@ struct GetReadVersionOp {
 	void serialize(Ar& ar) {}
 };
 
-using Operation =
-    std::variant<GetOp, GetRangeOp, SetOp, CommitOp, SetOptionOp, ResetOp, ClearOp, ClearRangeOp, GetReadVersionOp>;
+struct AddReadConflictRangeOp {
+	constexpr static FileIdentifier file_identifier = 5789870;
+
+	KeyRangeRef range;
+
+	AddReadConflictRangeOp() {}
+	AddReadConflictRangeOp(Arena& ar, KeyRangeRef range) : range(ar, range) {}
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, range);
+	}
+};
+
+struct OnErrorOp {
+	constexpr static FileIdentifier file_identifier = 5789871;
+
+	int errorCode;
+
+	OnErrorOp() {}
+	OnErrorOp(int errorCode) : errorCode(errorCode) {}
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, errorCode);
+	}
+};
+
+using Operation = std::variant<GetOp,
+                               GetRangeOp,
+                               SetOp,
+                               CommitOp,
+                               SetOptionOp,
+                               ResetOp,
+                               ClearOp,
+                               ClearRangeOp,
+                               GetReadVersionOp,
+                               AddReadConflictRangeOp,
+                               OnErrorOp>;
 
 enum OperationType {
 	OP_GET,
@@ -154,7 +191,9 @@ enum OperationType {
 	OP_RESET,
 	OP_CLEAR,
 	OP_CLEARRANGE,
-	OP_GETREADVERSION
+	OP_GETREADVERSION,
+	OP_ADDREADCONFLICTRANGE,
+	OP_ONERROR
 };
 
 template <class ValT, int file_id>

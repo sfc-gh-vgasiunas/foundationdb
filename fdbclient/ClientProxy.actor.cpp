@@ -142,6 +142,15 @@ void executeGetReadVersionOp(const GetReadVersionOp& op, Reference<ProxyTransact
 	replyAfterCompletion<Int64Result>(proxyTx, future);
 }
 
+void executeAddReadConflictRangeOp(const AddReadConflictRangeOp& op, Reference<ProxyTransaction> proxyTx) {
+	proxyTx->tx->addReadConflictRange(op.range);
+}
+
+void executeOnErrorOp(const OnErrorOp& op, Reference<ProxyTransaction> proxyTx) {
+	auto future = proxyTx->tx->onError(Error::fromUnvalidatedCode(op.errorCode));
+	replyAfterCompletion<VoidResult>(proxyTx, future);
+}
+
 void executeOperations(ProxyState* rpcProxyData,
                        Reference<ProxyTransaction> proxyTx,
                        const ExecOperationsRequest& request) {
@@ -184,6 +193,12 @@ void executeOperations(ProxyState* rpcProxyData,
 				break;
 			case OP_GETREADVERSION:
 				executeGetReadVersionOp(std::get<OP_GETREADVERSION>(op), proxyTx);
+				break;
+			case OP_ADDREADCONFLICTRANGE:
+				executeAddReadConflictRangeOp(std::get<OP_ADDREADCONFLICTRANGE>(op), proxyTx);
+				break;
+			case OP_ONERROR:
+				executeOnErrorOp(std::get<OP_ONERROR>(op), proxyTx);
 				break;
 			}
 		}

@@ -20,7 +20,7 @@
 
 #include "fdbclient/ClientProxyStub.h"
 #include "flow/IRandom.h"
-#include "flow/ThreadSafeQueue.h"
+#include "fdbclient/EmbeddedRPCClient.h"
 
 using namespace ClientProxy;
 
@@ -32,7 +32,6 @@ public:
 		interface.initClientEndpoints(proxyAddress);
 	}
 
-	~ClientProxyRPCStub() {}
 	ThreadFuture<ExecOperationsReply> executeOperations(ExecOperationsReference request) override {
 		return onMainThread([this, request]() {
 			while (true) {
@@ -91,11 +90,8 @@ ThreadFuture<ProtocolVersion> ClientProxyDatabaseStub::getServerProtocol(Optiona
 	UNIMPLEMENTED_OPERATION();
 }
 
-ClientProxyDatabaseStub::ClientProxyDatabaseStub(std::string proxyUrl, int apiVersion) {
-	rpcInterface = makeReference<ClientProxyRPCStub>(proxyUrl);
-	clientID = deterministicRandom()->randomUInt64();
-	txCounter = 0;
-}
+ClientProxyDatabaseStub::ClientProxyDatabaseStub(Reference<ClientRPCInterface> rpcInterface, int apiVersion)
+  : rpcInterface(rpcInterface), clientID(deterministicRandom()->randomUInt64()), txCounter(0) {}
 
 ClientProxyDatabaseStub::~ClientProxyDatabaseStub() {
 	std::cout << "Destroying proxy database" << std::endl;
@@ -224,7 +220,9 @@ ThreadFuture<Standalone<VectorRef<const char*>>> ClientProxyTransactionStub::get
 }
 
 void ClientProxyTransactionStub::addReadConflictRange(const KeyRangeRef& keys) {
-	UNIMPLEMENTED_OPERATION();
+	std::unique_lock<std::mutex> l(mutex);
+	createExecRequest();
+	addOperation(Operation(AddReadConflictRangeOp(currExecRequest->arena, keys)));
 }
 
 void ClientProxyTransactionStub::atomicOp(const KeyRef& key, const ValueRef& value, uint32_t operationType) {
@@ -297,7 +295,10 @@ void ClientProxyTransactionStub::setOption(FDBTransactionOptions::Option option,
 }
 
 ThreadFuture<Void> ClientProxyTransactionStub::onError(Error const& e) {
-	UNIMPLEMENTED_OPERATION();
+	std::unique_lock<std::mutex> l(mutex);
+	createExecRequest();
+	addOperation(Operation(OnErrorOp(e.code())));
+	return sendAndGetValue<VoidResult>();
 }
 
 void ClientProxyTransactionStub::reset() {
@@ -322,6 +323,10 @@ void ClientProxyAPIStub::setNetworkOption(FDBNetworkOptions::Option option, Opti
 	if (option == FDBNetworkOptions::PROXY_URL) {
 		if (value.present()) {
 			proxyUrl = value.get().toString();
+			if (proxyUrl == "embedded") {
+				embeddedProxy = true;
+				proxyUrl.clear();
+			}
 		}
 	}
 }
@@ -339,7 +344,13 @@ void ClientProxyAPIStub::stopNetwork() {
 }
 
 Reference<IDatabase> ClientProxyAPIStub::createDatabase(const char* clusterFilePath) {
-	return Reference<IDatabase>(new ClientProxyDatabaseStub(proxyUrl, apiVersion));
+	Reference<ClientRPCInterface> rpcIfc;
+	if (embeddedProxy) {
+		rpcIfc = makeReference<EmbeddedRPCClient>(clusterFilePath);
+	} else {
+		rpcIfc = makeReference<ClientProxyRPCStub>(proxyUrl);
+	}
+	return Reference<IDatabase>(new ClientProxyDatabaseStub(rpcIfc, apiVersion));
 }
 
 void ClientProxyAPIStub::addNetworkThreadCompletionHook(void (*hook)(void*), void* hookParameter) {

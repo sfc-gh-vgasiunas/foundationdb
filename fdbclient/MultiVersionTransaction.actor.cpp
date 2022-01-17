@@ -2125,7 +2125,7 @@ Reference<IDatabase> MultiVersionApi::createDatabase(const char* clusterFilePath
 	if (!proxyUrl.empty()) {
 		lock.leave();
 		ASSERT(proxyClient);
-		return proxyClient->api->createDatabase("");
+		return proxyClient->api->createDatabase(clusterFilePath);
 	}
 
 	std::string clusterFile(clusterFilePath);

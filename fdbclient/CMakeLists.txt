@@ -37,6 +37,7 @@ set(FDBCLIENT_SRCS
   ClientProxyInterface.h
   ClientProxyStub.cpp
   ClientProxyStub.h
+  ClientRPCInterface.h
   ClientVersion.h
   ClientWorkerInterface.h
   ClusterConnectionFile.actor.cpp
@@ -57,6 +58,8 @@ set(FDBCLIENT_SRCS
   DatabaseConfiguration.cpp
   DatabaseConfiguration.h
   DatabaseContext.h
+  EmbeddedRPCClient.cpp
+  EmbeddedRPCClient.h
   EventTypes.actor.h
   FDBOptions.h
   FDBTypes.cpp
