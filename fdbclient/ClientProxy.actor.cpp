@@ -36,29 +36,33 @@ void ClientProxyInterface::initServerEndpoints() {
 
 namespace ClientProxy {
 
+struct ProxyRequestState;
+using ProxyRequestReference = Reference<ProxyRequestState>;
+
 struct ProxyTransaction : public ReferenceCounted<ProxyTransaction> {
 	Reference<ReadYourWritesTransaction> tx;
 	uint32_t lastExecSeqNo = 0;
-	std::unordered_map<uint32_t, ExecOperationsReference> pendingRequests;
-	ReplyPromise<ExecOperationsReply> currentReply;
-	std::vector<Future<Void>> execActors;
+	std::unordered_map<uint32_t, ProxyRequestReference> pendingRequests;
+	std::unordered_map<uint32_t, ProxyRequestReference> activeRequests;
 };
+
+using ProxyTransactionReference = Reference<ProxyTransaction>;
 
 struct ProxyState {
 	Database db;
-	using TransactionMap = std::unordered_map<UID, Reference<ProxyTransaction>>;
+	using TransactionMap = std::unordered_map<UID, ProxyTransactionReference>;
 	TransactionMap transactionMap;
 
 	ProxyState(Reference<IClusterConnectionRecord> connRecord, LocalityData clientLocality) {
 		db = Database::createDatabase(connRecord, Database::API_VERSION_LATEST, IsInternal::False, clientLocality);
 	}
 
-	Reference<ProxyTransaction> getTransaction(UID transactionID) {
+	ProxyTransactionReference getTransaction(UID transactionID) {
 		auto iter = transactionMap.find(transactionID);
 		if (iter != transactionMap.end()) {
 			return iter->second;
 		}
-		Reference<ProxyTransaction> tx = makeReference<ProxyTransaction>();
+		ProxyTransactionReference tx = makeReference<ProxyTransaction>();
 		transactionMap[transactionID] = tx;
 		return tx;
 	}
@@ -71,141 +75,170 @@ struct ProxyState {
 	}
 };
 
+struct ProxyRequestState : public ReferenceCounted<ProxyRequestState> {
+	enum class State { PENDING, STARTED, COMPLETED };
+
+	State st = State::PENDING;
+	ExecOperationsReference request;
+	ProxyTransactionReference proxyTransaction;
+	std::vector<Future<Void>> execActors;
+
+	Reference<ReadYourWritesTransaction> transaction() { return proxyTransaction->tx; }
+
+	void actorStarted(Future<Void> actor) {
+		st = State::STARTED;
+		execActors.push_back(actor);
+		proxyTransaction->activeRequests[request->firstSeqNo] = ProxyRequestReference::addRef(this);
+	}
+
+	void completed() {
+		st = State::COMPLETED;
+		auto iter = proxyTransaction->activeRequests.find(request->firstSeqNo);
+		if (iter != proxyTransaction->activeRequests.end()) {
+			proxyTransaction->activeRequests.erase(iter);
+		}
+	}
+};
+
 ACTOR template <class ResultType, class T>
-Future<Void> executeAndReplyActor(ReplyPromise<ExecOperationsReply> reply, Future<T> f) {
+Future<Void> executeAndReplyActor(ProxyRequestReference req, Future<T> f) {
 	try {
 		T result = wait(f);
-		reply.send(ExecOperationsReply{ OperationResult(ResultType{ { result } }) });
+		req->request->reply.send(ExecOperationsReply{ OperationResult(ResultType{ { result } }) });
 	} catch (Error& e) {
-		reply.sendError(e);
+		req->request->reply.sendError(e);
 	}
+	req->completed();
 	return Void();
 }
 
 template <class ResultType, class T>
-void replyAfterCompletion(Reference<ProxyTransaction> proxyTx, Future<T> f) {
-	proxyTx->execActors.push_back(executeAndReplyActor<ResultType, T>(proxyTx->currentReply, f));
-	proxyTx->currentReply.reset();
+void replyAfterCompletion(ProxyRequestReference req, Future<T> f) {
+	req->actorStarted(executeAndReplyActor<ResultType, T>(req, f));
 }
 
-void executeGetOp(const GetOp& op, Reference<ProxyTransaction> proxyTx) {
-	auto future = proxyTx->tx->get(op.key, Snapshot{ op.snapshot });
-	replyAfterCompletion<GetResult>(proxyTx, future);
+void executeGetOp(const GetOp& op, ProxyRequestReference req) {
+	auto future = req->transaction()->get(op.key, Snapshot{ op.snapshot });
+	replyAfterCompletion<GetResult>(req, future);
 }
 
-void executeGetRangeOp(const GetRangeOp& op, Reference<ProxyTransaction> proxyTx) {
+void executeGetRangeOp(const GetRangeOp& op, ProxyRequestReference req) {
 	Future<RangeResult> future =
-	    proxyTx->tx->getRange(op.begin, op.end, op.limits, Snapshot{ op.snapshot }, Reverse{ op.reverse });
-	replyAfterCompletion<GetRangeResult>(proxyTx, future);
+	    req->transaction()->getRange(op.begin, op.end, op.limits, Snapshot{ op.snapshot }, Reverse{ op.reverse });
+	replyAfterCompletion<GetRangeResult>(req, future);
 }
 
-void executeSetOp(const SetOp& op, Reference<ProxyTransaction> proxyTx) {
-	proxyTx->tx->set(op.key, op.value);
+void executeSetOp(const SetOp& op, ProxyRequestReference req) {
+	req->transaction()->set(op.key, op.value);
 }
 
-ACTOR Future<Void> executeCommitActor(ReplyPromise<ExecOperationsReply> reply, Reference<ProxyTransaction> proxyTx) {
+ACTOR Future<Void> executeCommitActor(ProxyRequestReference req) {
 	try {
-		wait(proxyTx->tx->commit());
-		reply.send(ExecOperationsReply{ OperationResult(Int64Result{ { proxyTx->tx->getCommittedVersion() } }) });
+		wait(req->transaction()->commit());
+		req->request->reply.send(
+		    ExecOperationsReply{ OperationResult(Int64Result{ { req->transaction()->getCommittedVersion() } }) });
 	} catch (Error& e) {
-		reply.sendError(e);
+		req->request->reply.sendError(e);
 	}
+	req->completed();
 	return Void();
 }
 
-void executeCommitOp(const CommitOp& op, Reference<ProxyTransaction> proxyTx) {
-	proxyTx->execActors.push_back(executeCommitActor(proxyTx->currentReply, proxyTx));
-	proxyTx->currentReply.reset();
+void executeCommitOp(const CommitOp& op, ProxyRequestReference req) {
+	req->actorStarted(executeCommitActor(req));
 }
 
-void executeSetOptionOp(const SetOptionOp& op, Reference<ProxyTransaction> proxyTx) {
-	proxyTx->tx->setOption((FDBTransactionOptions::Option)op.optionId, op.value);
+void executeSetOptionOp(const SetOptionOp& op, ProxyRequestReference req) {
+	req->transaction()->setOption((FDBTransactionOptions::Option)op.optionId, op.value);
 }
 
-void executeResetOp(const ResetOp& op, Reference<ProxyTransaction> proxyTx) {
-	proxyTx->tx->reset();
+void executeResetOp(const ResetOp& op, ProxyRequestReference req) {
+	req->transaction()->reset();
 }
 
-void executeClearOp(const ClearOp& op, Reference<ProxyTransaction> proxyTx) {
-	proxyTx->tx->clear(op.key);
+void executeClearOp(const ClearOp& op, ProxyRequestReference req) {
+	req->transaction()->clear(op.key);
 }
 
-void executeClearRangeOp(const ClearRangeOp& op, Reference<ProxyTransaction> proxyTx) {
+void executeClearRangeOp(const ClearRangeOp& op, ProxyRequestReference req) {
 	if (op.begin > op.end)
 		throw inverted_range();
 
-	proxyTx->tx->clear(KeyRangeRef(op.begin, op.end));
+	req->transaction()->clear(KeyRangeRef(op.begin, op.end));
 }
 
-void executeGetReadVersionOp(const GetReadVersionOp& op, Reference<ProxyTransaction> proxyTx) {
-	auto future = proxyTx->tx->getReadVersion();
-	replyAfterCompletion<Int64Result>(proxyTx, future);
+void executeGetReadVersionOp(const GetReadVersionOp& op, ProxyRequestReference req) {
+	auto future = req->transaction()->getReadVersion();
+	replyAfterCompletion<Int64Result>(req, future);
 }
 
-void executeAddReadConflictRangeOp(const AddReadConflictRangeOp& op, Reference<ProxyTransaction> proxyTx) {
-	proxyTx->tx->addReadConflictRange(op.range);
+void executeAddReadConflictRangeOp(const AddReadConflictRangeOp& op, ProxyRequestReference req) {
+	req->transaction()->addReadConflictRange(op.range);
 }
 
-void executeOnErrorOp(const OnErrorOp& op, Reference<ProxyTransaction> proxyTx) {
-	auto future = proxyTx->tx->onError(Error::fromUnvalidatedCode(op.errorCode));
-	replyAfterCompletion<VoidResult>(proxyTx, future);
+void executeOnErrorOp(const OnErrorOp& op, ProxyRequestReference req) {
+	auto future = req->transaction()->onError(Error::fromUnvalidatedCode(op.errorCode));
+	replyAfterCompletion<VoidResult>(req, future);
 }
 
-void executeOperations(ProxyState* rpcProxyData,
-                       Reference<ProxyTransaction> proxyTx,
-                       const ExecOperationsRequest& request) {
+void executeOperations(ProxyState* rpcProxyData, ProxyRequestReference req) {
 
 	try {
-		if (proxyTx->lastExecSeqNo == 0) {
-			proxyTx->tx = makeReference<ReadYourWritesTransaction>(rpcProxyData->db);
+		if (req->proxyTransaction->lastExecSeqNo == 0) {
+			req->proxyTransaction->tx = makeReference<ReadYourWritesTransaction>(rpcProxyData->db);
 		}
 
-		proxyTx->currentReply = request.reply;
-		for (auto op : request.operations) {
-			// the operatin sending a reply must be the last in the sequence
-			if (!proxyTx->currentReply.isValid()) {
+		for (auto op : req->request->operations) {
+			// only the last operation can start an actor
+			if (req->st != ProxyRequestState::State::PENDING) {
 				throw client_invalid_operation();
 			}
+
 			switch (op.index()) {
 			case OP_GET:
-				executeGetOp(std::get<OP_GET>(op), proxyTx);
+				executeGetOp(std::get<OP_GET>(op), req);
 				break;
 			case OP_GETRANGE:
-				executeGetRangeOp(std::get<OP_GETRANGE>(op), proxyTx);
+				executeGetRangeOp(std::get<OP_GETRANGE>(op), req);
 				break;
 			case OP_SET:
-				executeSetOp(std::get<OP_SET>(op), proxyTx);
+				executeSetOp(std::get<OP_SET>(op), req);
 				break;
 			case OP_COMMIT:
-				executeCommitOp(std::get<OP_COMMIT>(op), proxyTx);
+				executeCommitOp(std::get<OP_COMMIT>(op), req);
 				break;
 			case OP_SETOPTION:
-				executeSetOptionOp(std::get<OP_SETOPTION>(op), proxyTx);
+				executeSetOptionOp(std::get<OP_SETOPTION>(op), req);
 				break;
 			case OP_RESET:
-				executeResetOp(std::get<OP_RESET>(op), proxyTx);
+				executeResetOp(std::get<OP_RESET>(op), req);
 				break;
 			case OP_CLEAR:
-				executeClearOp(std::get<OP_CLEAR>(op), proxyTx);
+				executeClearOp(std::get<OP_CLEAR>(op), req);
 				break;
 			case OP_CLEARRANGE:
-				executeClearRangeOp(std::get<OP_CLEARRANGE>(op), proxyTx);
+				executeClearRangeOp(std::get<OP_CLEARRANGE>(op), req);
 				break;
 			case OP_GETREADVERSION:
-				executeGetReadVersionOp(std::get<OP_GETREADVERSION>(op), proxyTx);
+				executeGetReadVersionOp(std::get<OP_GETREADVERSION>(op), req);
 				break;
 			case OP_ADDREADCONFLICTRANGE:
-				executeAddReadConflictRangeOp(std::get<OP_ADDREADCONFLICTRANGE>(op), proxyTx);
+				executeAddReadConflictRangeOp(std::get<OP_ADDREADCONFLICTRANGE>(op), req);
 				break;
 			case OP_ONERROR:
-				executeOnErrorOp(std::get<OP_ONERROR>(op), proxyTx);
+				executeOnErrorOp(std::get<OP_ONERROR>(op), req);
 				break;
 			}
 		}
+
+		// check if the last operation sent a reply
+		if (req->st == ProxyRequestState::State::PENDING) {
+			throw client_invalid_operation();
+		}
 	} catch (Error& e) {
-		request.reply.sendError(e);
+		req->request->reply.sendError(e);
 	}
-	proxyTx->lastExecSeqNo += request.operations.size();
+	req->proxyTransaction->lastExecSeqNo += req->request->operations.size();
 }
 
 ProxyState* createProxyState(Reference<IClusterConnectionRecord> connRecord, LocalityData clientLocality) {
@@ -227,15 +260,18 @@ void handleExecOperationsRequest(ProxyState* rpcProxyData, ExecOperationsReferen
 
 	UID transactionID(request->clientID, request->transactionID);
 	Reference<ProxyTransaction> proxyTx = rpcProxyData->getTransaction(transactionID);
+	ProxyRequestReference proxyRequest = makeReference<ProxyRequestState>();
+	proxyRequest->request = request;
+	proxyRequest->proxyTransaction = proxyTx;
 
 	// If previous operations not yet executed, enqueue the current request as pending
 	if (proxyTx->lastExecSeqNo != request->firstSeqNo) {
-		proxyTx->pendingRequests[request->firstSeqNo] = request;
+		proxyTx->pendingRequests[request->firstSeqNo] = proxyRequest;
 		return;
 	}
 
 	// Execute the current request
-	executeOperations(rpcProxyData, proxyTx, *request);
+	executeOperations(rpcProxyData, proxyRequest);
 
 	// Execute pending requests
 	while (true) {
@@ -243,7 +279,7 @@ void handleExecOperationsRequest(ProxyState* rpcProxyData, ExecOperationsReferen
 		if (reqIter == proxyTx->pendingRequests.end()) {
 			break;
 		}
-		executeOperations(rpcProxyData, proxyTx, *reqIter->second);
+		executeOperations(rpcProxyData, reqIter->second);
 		proxyTx->pendingRequests.erase(reqIter);
 	}
 }
