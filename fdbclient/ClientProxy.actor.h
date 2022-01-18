@@ -38,7 +38,7 @@ ProxyState* createProxyState(Reference<IClusterConnectionRecord> connRecord, Loc
 
 void destroyProxyState(ProxyState* proxyState);
 
-void handleExecOperationsRequest(ProxyState* rpcProxyData, const ExecOperationsRequest& request);
+void handleExecOperationsRequest(ProxyState* rpcProxyData, ExecOperationsReference request);
 
 void releaseTransaction(ProxyState* proxyState, UID transactionID);
 

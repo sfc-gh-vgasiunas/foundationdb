@@ -136,7 +136,7 @@ private:
 	ThreadFuture<typename ResType::value_type> sendAndGetValue();
 
 	std::mutex mutex;
-	Reference<ExecOperationsRequestRefCounted> currExecRequest;
+	ClientProxy::ExecOperationsReference currExecRequest;
 	Reference<ClientProxyDatabaseStub> db;
 	uint64_t transactionID;
 	int32_t operationCounter;

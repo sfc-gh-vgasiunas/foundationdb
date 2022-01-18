@@ -39,7 +39,7 @@ namespace ClientProxy {
 struct ProxyTransaction : public ReferenceCounted<ProxyTransaction> {
 	Reference<ReadYourWritesTransaction> tx;
 	uint32_t lastExecSeqNo = 0;
-	std::unordered_map<uint32_t, ExecOperationsRequest> pendingRequests;
+	std::unordered_map<uint32_t, ExecOperationsReference> pendingRequests;
 	ReplyPromise<ExecOperationsReply> currentReply;
 	std::vector<Future<Void>> execActors;
 };
@@ -220,22 +220,22 @@ void releaseTransaction(ProxyState* proxyState, UID transactionID) {
 	proxyState->releaseTransaction(transactionID);
 }
 
-void handleExecOperationsRequest(ProxyState* rpcProxyData, const ExecOperationsRequest& request) {
-	for (uint64_t txID : request.releasedTransactions) {
-		rpcProxyData->releaseTransaction(UID(request.clientID, txID));
+void handleExecOperationsRequest(ProxyState* rpcProxyData, ExecOperationsReference request) {
+	for (uint64_t txID : request->releasedTransactions) {
+		rpcProxyData->releaseTransaction(UID(request->clientID, txID));
 	}
 
-	UID transactionID(request.clientID, request.transactionID);
+	UID transactionID(request->clientID, request->transactionID);
 	Reference<ProxyTransaction> proxyTx = rpcProxyData->getTransaction(transactionID);
 
 	// If previous operations not yet executed, enqueue the current request as pending
-	if (proxyTx->lastExecSeqNo != request.firstSeqNo) {
-		proxyTx->pendingRequests[request.firstSeqNo] = request;
+	if (proxyTx->lastExecSeqNo != request->firstSeqNo) {
+		proxyTx->pendingRequests[request->firstSeqNo] = request;
 		return;
 	}
 
 	// Execute the current request
-	executeOperations(rpcProxyData, proxyTx, request);
+	executeOperations(rpcProxyData, proxyTx, *request);
 
 	// Execute pending requests
 	while (true) {
@@ -243,7 +243,7 @@ void handleExecOperationsRequest(ProxyState* rpcProxyData, const ExecOperationsR
 		if (reqIter == proxyTx->pendingRequests.end()) {
 			break;
 		}
-		executeOperations(rpcProxyData, proxyTx, reqIter->second);
+		executeOperations(rpcProxyData, proxyTx, *reqIter->second);
 		proxyTx->pendingRequests.erase(reqIter);
 	}
 }
@@ -254,7 +254,8 @@ ACTOR Future<Void> proxyServer(ClientProxyInterface interface,
 	state ProxyState proxyData(connRecord, clientLocality);
 	loop {
 		ExecOperationsRequest req = waitNext(interface.execOperations.getFuture());
-		handleExecOperationsRequest(&proxyData, req);
+		ExecOperationsReference reqRef = makeReference<ExecOperationsRequestRefCounted>(req);
+		handleExecOperationsRequest(&proxyData, reqRef);
 	}
 }
 

@@ -25,14 +25,11 @@
 #include "fdbclient/ClientProxyInterface.h"
 #include "flow/ThreadHelper.actor.h"
 
-struct ExecOperationsRequestRefCounted : public ClientProxy::ExecOperationsRequest,
-                                         public ThreadSafeReferenceCounted<ExecOperationsRequestRefCounted> {};
-using ExecOperationsReference = Reference<ExecOperationsRequestRefCounted>;
-
 class ClientRPCInterface : public ThreadSafeReferenceCounted<ClientRPCInterface> {
 public:
 	virtual ~ClientRPCInterface() {}
-	virtual ThreadFuture<ClientProxy::ExecOperationsReply> executeOperations(ExecOperationsReference request) = 0;
+	virtual ThreadFuture<ClientProxy::ExecOperationsReply> executeOperations(
+	    ClientProxy::ExecOperationsReference request) = 0;
 	virtual void releaseTransaction(uint64_t transaction) = 0;
 	virtual uint64_t getClientID() = 0;
 };

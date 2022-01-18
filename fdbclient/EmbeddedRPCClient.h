@@ -34,7 +34,8 @@ public:
 	static constexpr uint64_t CLIENT_ID = 1;
 	EmbeddedRPCClient(std::string connFilename);
 	~EmbeddedRPCClient() override;
-	ThreadFuture<ClientProxy::ExecOperationsReply> executeOperations(ExecOperationsReference request) override;
+	ThreadFuture<ClientProxy::ExecOperationsReply> executeOperations(
+	    ClientProxy::ExecOperationsReference request) override;
 	void releaseTransaction(uint64_t transaction) override;
 	uint64_t getClientID() override { return CLIENT_ID; }
 
@@ -42,5 +43,29 @@ private:
 	ClientProxy::ProxyState* proxyState;
 	ThreadSafeQueue<uint64_t> releasedTransactions;
 };
+
+class DLRPCClient : public ClientRPCInterface {
+public:
+	static constexpr uint64_t CLIENT_ID = 1;
+	DLRPCClient(std::string connFilename);
+	~DLRPCClient() override;
+	ThreadFuture<ClientProxy::ExecOperationsReply> executeOperations(
+	    ClientProxy::ExecOperationsReference request) override;
+	void releaseTransaction(uint64_t transaction) override;
+	uint64_t getClientID() override { return CLIENT_ID; }
+
+private:
+	EmbeddedRPCClient* impl;
+};
+
+typedef struct FDB_future FDBFuture;
+typedef int fdb_error_t;
+
+extern "C" {
+DLLEXPORT fdb_error_t fdb_rpc_client_create(const char* connFilename, EmbeddedRPCClient** client);
+DLLEXPORT FDBFuture* fdb_rpc_client_exec_request(EmbeddedRPCClient* client, const void* requestBytes, int requestLen);
+DLLEXPORT void fdb_rpc_client_release_transaction(EmbeddedRPCClient* client, uint64_t txID);
+DLLEXPORT void fdb_rpc_client_destroy(EmbeddedRPCClient* client);
+}
 
 #endif

@@ -226,7 +226,7 @@ struct ExecOperationsReply {
 	}
 };
 
-struct ExecOperationsRequest {
+struct ExecOperationsReqInput {
 	constexpr static FileIdentifier file_identifier = 7632546;
 	Arena arena;
 	uint64_t clientID;
@@ -234,13 +234,31 @@ struct ExecOperationsRequest {
 	uint32_t firstSeqNo;
 	std::vector<Operation> operations;
 	std::vector<uint64_t> releasedTransactions;
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, clientID, transactionID, firstSeqNo, operations, releasedTransactions, arena);
+	}
+};
+
+struct ExecOperationsRequest : public ExecOperationsReqInput {
+	constexpr static FileIdentifier file_identifier = 7632547;
 	ReplyPromise<ExecOperationsReply> reply;
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		serializer(ar, clientID, transactionID, firstSeqNo, operations, releasedTransactions, reply, arena);
+		ExecOperationsReqInput::serialize(ar);
+		serializer(ar, reply);
 	}
 };
+
+struct ExecOperationsRequestRefCounted : public ExecOperationsRequest,
+                                         public ThreadSafeReferenceCounted<ExecOperationsRequestRefCounted> {
+	ExecOperationsRequestRefCounted() = default;
+	ExecOperationsRequestRefCounted(const ExecOperationsRequest& req) : ExecOperationsRequest(req) {}
+};
+
+using ExecOperationsReference = Reference<ExecOperationsRequestRefCounted>;
 
 } // namespace ClientProxy
 

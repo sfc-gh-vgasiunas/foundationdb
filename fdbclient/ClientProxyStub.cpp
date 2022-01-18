@@ -350,7 +350,7 @@ void ClientProxyAPIStub::stopNetwork() {
 Reference<IDatabase> ClientProxyAPIStub::createDatabase(const char* clusterFilePath) {
 	Reference<ClientRPCInterface> rpcIfc;
 	if (embeddedProxy) {
-		rpcIfc = makeReference<EmbeddedRPCClient>(clusterFilePath);
+		rpcIfc = makeReference<DLRPCClient>(clusterFilePath);
 	} else {
 		rpcIfc = makeReference<ClientProxyRPCStub>(proxyUrl);
 	}
