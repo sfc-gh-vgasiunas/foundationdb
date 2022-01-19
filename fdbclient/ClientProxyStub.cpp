@@ -24,37 +24,6 @@
 
 using namespace ClientProxy;
 
-class ClientProxyRPCStub : public ClientRPCInterface {
-public:
-	ClientProxyRPCStub(std::string proxyUrl) {
-		std::cout << "Connecting to proxy " << proxyUrl << std::endl;
-		NetworkAddress proxyAddress = NetworkAddress::parse(proxyUrl);
-		interface.initClientEndpoints(proxyAddress);
-		clientID = deterministicRandom()->randomUInt64();
-	}
-
-	ThreadFuture<ExecOperationsReply> executeOperations(ExecOperationsReference request) override {
-		return onMainThread([this, request]() {
-			while (true) {
-				Optional<uint64_t> t = releasedTransactions.pop();
-				if (!t.present())
-					break;
-				request->releasedTransactions.push_back(t.get());
-			}
-			return interface.execOperations.getReply(*request);
-		});
-	}
-
-	virtual void releaseTransaction(uint64_t transactionID) override { releasedTransactions.push(transactionID); }
-
-	virtual uint64_t getClientID() override { return clientID; }
-
-private:
-	ThreadSafeQueue<uint64_t> releasedTransactions;
-	ClientProxyInterface interface;
-	uint64_t clientID;
-};
-
 #define UNIMPLEMENTED_OPERATION()                                                                                      \
 	std::cout << "Unimplemented proxy operation called: " << __func__ << std::endl;                                    \
 	std::cout.flush();                                                                                                 \
@@ -128,7 +97,10 @@ ThreadFuture<ExecOperationsReply> ClientProxyTransactionStub::sendCurrExecReques
 	ASSERT(currExecRequest.isValid());
 	Reference<ExecOperationsRequestRefCounted> request = this->currExecRequest;
 	currExecRequest.clear();
-	return db->getRpcInterface()->executeOperations(request);
+	auto returnValue = new ThreadSingleAssignmentVar<ExecOperationsReply>();
+	returnValue->addref(); // For the ThreadFuture we return
+	db->getRpcInterface()->executeOperations(request, returnValue);
+	return ThreadFuture<ExecOperationsReply>(returnValue);
 }
 
 template <class ResType>

@@ -58,7 +58,7 @@ set(FDBCLIENT_SRCS
   DatabaseConfiguration.cpp
   DatabaseConfiguration.h
   DatabaseContext.h
-  EmbeddedRPCClient.cpp
+  EmbeddedRPCClient.actor.cpp
   EmbeddedRPCClient.h
   EventTypes.actor.h
   FDBOptions.h
