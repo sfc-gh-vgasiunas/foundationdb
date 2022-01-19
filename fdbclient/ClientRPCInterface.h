@@ -25,11 +25,12 @@
 #include "fdbclient/ClientProxyInterface.h"
 #include "flow/ThreadHelper.actor.h"
 
+using ExecOperationsReplySAV = ThreadSingleAssignmentVar<ClientProxy::ExecOperationsReply>;
+
 class ClientRPCInterface : public ThreadSafeReferenceCounted<ClientRPCInterface> {
 public:
 	virtual ~ClientRPCInterface() {}
-	virtual void executeOperations(ClientProxy::ExecOperationsReference request,
-	                               ThreadSingleAssignmentVar<ClientProxy::ExecOperationsReply>* result) = 0;
+	virtual void executeOperations(ClientProxy::ExecOperationsReference request, ExecOperationsReplySAV* result) = 0;
 	virtual void releaseTransaction(uint64_t transaction) = 0;
 	virtual uint64_t getClientID() = 0;
 };

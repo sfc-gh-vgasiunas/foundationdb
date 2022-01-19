@@ -33,7 +33,7 @@ ACTOR
 Future<Void> executeRemoteProxyOperationsActor(Future<Void> signal,
                                                Reference<ClientProxyRPCStub> client,
                                                ExecOperationsReference request,
-                                               ThreadSingleAssignmentVar<ExecOperationsReply>* result) {
+                                               ExecOperationsReplySAV* result) {
 	try {
 		wait(signal);
 		while (true) {
@@ -47,9 +47,7 @@ Future<Void> executeRemoteProxyOperationsActor(Future<Void> signal,
 	} catch (Error& e) {
 		result->sendError(e);
 	}
-
-	ThreadFuture<ExecOperationsReply> destroyResultAfterReturning(
-	    result); // Call result->delref(), but only after our return promise is no longer referenced on this thread
+	result->delref();
 	return Void();
 }
 
@@ -62,8 +60,7 @@ ClientProxyRPCStub::ClientProxyRPCStub(std::string proxyUrl) {
 	clientID = deterministicRandom()->randomUInt64();
 }
 
-void ClientProxyRPCStub::executeOperations(ExecOperationsReference request,
-                                           ThreadSingleAssignmentVar<ExecOperationsReply>* result) {
+void ClientProxyRPCStub::executeOperations(ExecOperationsReference request, ExecOperationsReplySAV* result) {
 	Reference<ClientProxyRPCStub> thisRef = Reference<ClientProxyRPCStub>::addRef(this);
 	Promise<Void> signal;
 	Future<Void> cancelFuture = executeRemoteProxyOperationsActor(signal.getFuture(), thisRef, request, result);
@@ -75,7 +72,7 @@ void ClientProxyRPCStub::releaseTransaction(uint64_t transactionID) {
 	releasedTransactions.push(transactionID);
 }
 
-EmbeddedRPCClient::EmbeddedRPCClient(std::string connFilename) {
+EmbeddedRPCClient::EmbeddedRPCClient(const std::string& connFilename) {
 	Reference<IClusterConnectionRecord> connFile =
 	    makeReference<ClusterConnectionFile>(ClusterConnectionFile::lookupClusterFileName(connFilename).first);
 	Reference<EmbeddedRPCClient> thisRef = Reference<EmbeddedRPCClient>::addRef(this);
@@ -93,31 +90,27 @@ ACTOR
 Future<Void> executeEmbeddedProxyOperationsActor(Future<Void> signal,
                                                  Reference<EmbeddedRPCClient> client,
                                                  ExecOperationsReference request,
-                                                 ThreadSingleAssignmentVar<ExecOperationsReply>* result) {
+                                                 ExecOperationsReplySAV* result) {
 	try {
 		wait(signal);
 		while (true) {
 			Optional<uint64_t> t = client->releasedTransactions.pop();
 			if (!t.present())
 				break;
-			ClientProxy::releaseTransaction(client->proxyState, UID(EmbeddedRPCClient::CLIENT_ID, t.get()));
+			releaseTransaction(client->proxyState, UID(EmbeddedRPCClient::CLIENT_ID, t.get()));
 		}
 		handleExecOperationsRequest(client->proxyState, request);
 		ExecOperationsReply r = wait(request->reply.getFuture());
-		result->send(r);
+		client->sendReply(r, result);
 	} catch (Error& e) {
-		result->sendError(e);
+		client->sendError(e, result);
 	}
-
-	ThreadFuture<ExecOperationsReply> destroyResultAfterReturning(
-	    result); // Call result->delref(), but only after our return promise is no longer referenced on this thread
 	return Void();
 }
 
 } // namespace
 
-void EmbeddedRPCClient::executeOperations(ExecOperationsReference request,
-                                          ThreadSingleAssignmentVar<ClientProxy::ExecOperationsReply>* result) {
+void EmbeddedRPCClient::executeOperations(ExecOperationsReference request, ExecOperationsReplySAV* result) {
 	Reference<EmbeddedRPCClient> thisRef = Reference<EmbeddedRPCClient>::addRef(this);
 	Promise<Void> signal;
 	Future<Void> cancelFuture = executeEmbeddedProxyOperationsActor(signal.getFuture(), thisRef, request, result);
@@ -129,8 +122,52 @@ void EmbeddedRPCClient::releaseTransaction(uint64_t transaction) {
 	releasedTransactions.push(transaction);
 }
 
+void EmbeddedRPCClient::sendReply(const ExecOperationsReply& reply, ExecOperationsReplySAV* result) {
+	result->send(reply);
+	result->delref();
+}
+
+void EmbeddedRPCClient::sendError(const Error& e, ExecOperationsReplySAV* result) {
+	result->sendError(e);
+	result->delref();
+}
+
+void ExternalRPCClient::sendReply(const ExecOperationsReply& reply, ExecOperationsReplySAV* result) {
+	ObjectWriter ow(Unversioned());
+	ow.serialize(reply);
+	StringRef str = ow.toStringRef();
+	sendReplyCB((FDBFuture*)result, str.begin(), str.size());
+}
+
+void ExternalRPCClient::sendError(const Error& e, ExecOperationsReplySAV* result) {
+	sendErrorCB((FDBFuture*)result, e.code());
+}
+
+void DLRPCClient_sendReply(FDBFuture* f, const void* bytes, int size) {
+	try {
+		ObjectReader rd((const uint8_t*)bytes, Unversioned());
+		ExecOperationsReply reply;
+		rd.deserialize(reply);
+		ExecOperationsReplySAV* sav = ((ExecOperationsReplySAV*)f);
+		sav->send(reply);
+		sav->delref();
+	} catch (Error& e) {
+		fprintf(stderr, "fdb_rpc_client_exec_request: Unexpected FDB error %d\n", e.code());
+		abort();
+	} catch (...) {
+		fprintf(stderr, "fdb_rpc_client_exec_request: Unexpected FDB unknown error\n");
+		abort();
+	}
+}
+
+void DLRPCClient_sendError(FDBFuture* f, fdb_error_t err) {
+	ExecOperationsReplySAV* sav = ((ExecOperationsReplySAV*)f);
+	sav->sendError(Error(err));
+	sav->delref();
+}
+
 DLRPCClient::DLRPCClient(std::string connFilename) {
-	fdb_error_t err = fdb_rpc_client_create(connFilename.c_str(), &impl);
+	fdb_error_t err = fdb_rpc_client_create(connFilename.c_str(), DLRPCClient_sendReply, DLRPCClient_sendError, &impl);
 	if (err != error_code_success) {
 		throw Error(err);
 	}
@@ -140,8 +177,7 @@ DLRPCClient::~DLRPCClient() {
 	fdb_rpc_client_destroy(impl);
 }
 
-void DLRPCClient::executeOperations(ExecOperationsReference request,
-                                    ThreadSingleAssignmentVar<ClientProxy::ExecOperationsReply>* result) {
+void DLRPCClient::executeOperations(ExecOperationsReference request, ExecOperationsReplySAV* result) {
 	ObjectWriter ow(Unversioned());
 	ow.serialize(*(ExecOperationsReqInput*)request.getPtr());
 	StringRef str = ow.toStringRef();
@@ -152,9 +188,12 @@ void DLRPCClient::releaseTransaction(uint64_t transaction) {
 	fdb_rpc_client_release_transaction(impl, transaction);
 }
 
-extern "C" DLLEXPORT fdb_error_t fdb_rpc_client_create(const char* connFilename, EmbeddedRPCClient** client) {
+extern "C" DLLEXPORT fdb_error_t fdb_rpc_client_create(const char* connFilename,
+                                                       SendReplyCallback replyCB,
+                                                       SendErrorCallback errorCB,
+                                                       EmbeddedRPCClient** client) {
 	try {
-		*client = new EmbeddedRPCClient(connFilename);
+		*client = new ExternalRPCClient(connFilename, replyCB, errorCB);
 	} catch (Error& e) {
 		return e.code();
 	}
@@ -169,7 +208,7 @@ extern "C" DLLEXPORT void fdb_rpc_client_exec_request(EmbeddedRPCClient* client,
 		ObjectReader rd((const uint8_t*)requestBytes, Unversioned());
 		ExecOperationsReference ref = makeReference<ExecOperationsRequestRefCounted>();
 		rd.deserialize(*(ExecOperationsReqInput*)ref.getPtr());
-		client->executeOperations(ref, (ThreadSingleAssignmentVar<ClientProxy::ExecOperationsReply>*)result);
+		client->executeOperations(ref, (ExecOperationsReplySAV*)result);
 	} catch (Error& e) {
 		fprintf(stderr, "fdb_rpc_client_exec_request: Unexpected FDB error %d\n", e.code());
 		abort();

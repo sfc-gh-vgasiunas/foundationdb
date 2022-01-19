@@ -97,7 +97,7 @@ ThreadFuture<ExecOperationsReply> ClientProxyTransactionStub::sendCurrExecReques
 	ASSERT(currExecRequest.isValid());
 	Reference<ExecOperationsRequestRefCounted> request = this->currExecRequest;
 	currExecRequest.clear();
-	auto returnValue = new ThreadSingleAssignmentVar<ExecOperationsReply>();
+	auto returnValue = new ExecOperationsReplySAV();
 	returnValue->addref(); // For the ThreadFuture we return
 	db->getRpcInterface()->executeOperations(request, returnValue);
 	return ThreadFuture<ExecOperationsReply>(returnValue);
