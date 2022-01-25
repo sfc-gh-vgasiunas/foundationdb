@@ -25,13 +25,34 @@
 #include "fdbclient/ClientProxyInterface.h"
 #include "flow/ThreadHelper.actor.h"
 
-using ExecOperationsReplySAV = ThreadSingleAssignmentVar<ClientProxy::ExecOperationsReply>;
+namespace ClientProxy {
+struct ProxyRequestState;
+} // namespace ClientProxy
 
-class ClientRPCInterface : public ThreadSafeReferenceCounted<ClientRPCInterface> {
+class IExecOperationsCallback {
 public:
-	virtual ~ClientRPCInterface() {}
-	virtual void executeOperations(ClientProxy::ExecOperationsReference request, ExecOperationsReplySAV* result) = 0;
+	virtual ~IExecOperationsCallback() {}
+	virtual void sendReply(const ClientProxy::ExecOperationsReply& reply) = 0;
+	virtual void sendError(const Error& e) = 0;
+	virtual void setCancel(Future<Void>&& cancel) = 0;
+	virtual void setProxyRequest(ClientProxy::ProxyRequestState* proxyRequest) = 0;
+	virtual void cancelProxyRequest() = 0;
+	virtual ClientProxy::ProxyRequestState* getProxyRequest() = 0;
+};
+
+class IExecOperationsCallbackHandler {
+public:
+	virtual ~IExecOperationsCallbackHandler() {}
+	virtual void sendReply(const ClientProxy::ExecOperationsReply& reply, IExecOperationsCallback* callback) = 0;
+	virtual void sendError(const Error& e, IExecOperationsCallback* callback) = 0;
+};
+
+class IClientRPCInterface : public ThreadSafeReferenceCounted<IClientRPCInterface> {
+public:
+	virtual ~IClientRPCInterface() {}
+	virtual void executeOperations(ClientProxy::ExecOperationsReference request, IExecOperationsCallback* callback) = 0;
 	virtual void releaseTransaction(uint64_t transaction) = 0;
+	virtual void cancelRequest(ClientProxy::ProxyRequestState* request) = 0;
 	virtual uint64_t getClientID() = 0;
 };
 

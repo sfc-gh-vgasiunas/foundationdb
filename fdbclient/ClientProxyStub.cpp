@@ -63,7 +63,7 @@ ThreadFuture<ProtocolVersion> ClientProxyDatabaseStub::getServerProtocol(Optiona
 	UNIMPLEMENTED_OPERATION();
 }
 
-ClientProxyDatabaseStub::ClientProxyDatabaseStub(Reference<ClientRPCInterface> rpcInterface, int apiVersion)
+ClientProxyDatabaseStub::ClientProxyDatabaseStub(Reference<IClientRPCInterface> rpcInterface, int apiVersion)
   : rpcInterface(rpcInterface), clientID(rpcInterface->getClientID()), txCounter(0) {}
 
 ClientProxyDatabaseStub::~ClientProxyDatabaseStub() {
@@ -93,27 +93,85 @@ void ClientProxyTransactionStub::addOperation(const Operation& op) {
 	operationCounter++;
 }
 
-ThreadFuture<ExecOperationsReply> ClientProxyTransactionStub::sendCurrExecRequest() {
+class ExecOperationsCallbackBase : public IExecOperationsCallback {
+public:
+	ExecOperationsCallbackBase(ThreadSingleAssignmentVarBase* sav) : sav(sav), proxyRequest(nullptr) { sav->addref(); }
+	void sendError(const Error& e) override {
+		sav->sendError(e);
+		sav->delref();
+	}
+	void setProxyRequest(ClientProxy::ProxyRequestState* proxyRequest) override { this->proxyRequest = proxyRequest; }
+	ClientProxy::ProxyRequestState* getProxyRequest() override { return proxyRequest; }
+	void setCancel(Future<Void>&& cancel) override { sav->setCancel(std::move(cancel)); }
+	void cancelProxyRequest() override { clientIfc->cancelRequest(proxyRequest); }
+	void setClientInterface(Reference<IClientRPCInterface> clientIfc) { this->clientIfc = clientIfc; }
+
+	ThreadSingleAssignmentVarBase* sav;
+	ClientProxy::ProxyRequestState* proxyRequest;
+	Reference<IClientRPCInterface> clientIfc;
+};
+
+template <class T>
+class ExecOperationsCallbackSAV : public ThreadSingleAssignmentVar<T> {
+public:
+	ExecOperationsCallbackSAV(IExecOperationsCallback* cb) : cb(cb) {}
+	~ExecOperationsCallbackSAV() override { delete (cb); }
+
+	void cancel() override {
+		cb->cancelProxyRequest();
+		ThreadSingleAssignmentVar<T>::cancel();
+	}
+
+private:
+	IExecOperationsCallback* cb;
+};
+
+template <class ResType>
+class ExecOperationsExtractValueCallback : public ExecOperationsCallbackBase {
+public:
+	using SAVType = ExecOperationsCallbackSAV<typename ResType::value_type>;
+
+	ExecOperationsExtractValueCallback() : ExecOperationsCallbackBase(new SAVType(this)) {}
+
+	SAVType* getSAV() { return (SAVType*)this->sav; }
+
+	void sendReply(const ExecOperationsReply& reply) override {
+		getSAV()->send(std::get<ResType>(reply.res).val);
+		getSAV()->delref();
+	}
+};
+
+class ExecOperationsCommitCallback : public ExecOperationsCallbackBase {
+public:
+	using SAVType = ExecOperationsCallbackSAV<Void>;
+
+	ExecOperationsCommitCallback(Reference<ClientProxyTransactionStub> tx)
+	  : ExecOperationsCallbackBase(new SAVType(this)), tx(tx) {}
+
+	SAVType* getSAV() { return (SAVType*)this->sav; }
+
+	void sendReply(const ExecOperationsReply& reply) override {
+		tx->setCommittedVersion(std::get<Int64Result>(reply.res).val);
+		getSAV()->send(Void());
+		getSAV()->delref();
+	}
+
+	Reference<ClientProxyTransactionStub> tx;
+};
+
+void ClientProxyTransactionStub::sendCurrExecRequest(ExecOperationsCallbackBase* cb) {
 	ASSERT(currExecRequest.isValid());
 	Reference<ExecOperationsRequestRefCounted> request = this->currExecRequest;
 	currExecRequest.clear();
-	auto returnValue = new ExecOperationsReplySAV();
-	returnValue->addref(); // For the ThreadFuture we return
-	db->getRpcInterface()->executeOperations(request, returnValue);
-	return ThreadFuture<ExecOperationsReply>(returnValue);
+	cb->clientIfc = db->getRpcInterface();
+	db->getRpcInterface()->executeOperations(request, cb);
 }
 
 template <class ResType>
 ThreadFuture<typename ResType::value_type> ClientProxyTransactionStub::sendAndGetValue() {
-	ThreadFuture<ExecOperationsReply> replyFuture = sendCurrExecRequest();
-	using ValType = typename ResType::value_type;
-	return mapThreadFuture<ExecOperationsReply, ValType>(replyFuture, [](ErrorOr<ExecOperationsReply> reply) {
-		if (reply.isError()) {
-			return ErrorOr<ValType>(reply.getError());
-		} else {
-			return ErrorOr<ValType>(std::get<ResType>(reply.get().res).val);
-		}
-	});
+	ExecOperationsExtractValueCallback<ResType>* cb = new ExecOperationsExtractValueCallback<ResType>();
+	sendCurrExecRequest(cb);
+	return ThreadFuture<typename ResType::value_type>(cb->getSAV());
 }
 
 void ClientProxyTransactionStub::cancel() {
@@ -241,15 +299,10 @@ ThreadFuture<Void> ClientProxyTransactionStub::commit() {
 	std::unique_lock<std::mutex> l(mutex);
 	createExecRequest();
 	addOperation(Operation(CommitOp()));
-	ThreadFuture<ExecOperationsReply> replyFuture = sendCurrExecRequest();
-	return mapThreadFuture<ExecOperationsReply, Void>(replyFuture, [this](ErrorOr<ExecOperationsReply> reply) {
-		if (reply.isError()) {
-			return ErrorOr<Void>(reply.getError());
-		} else {
-			this->committedVersion = std::get<Int64Result>(reply.get().res).val;
-			return ErrorOr<Void>(Void());
-		}
-	});
+	ExecOperationsCommitCallback* cb =
+	    new ExecOperationsCommitCallback(Reference<ClientProxyTransactionStub>::addRef(this));
+	sendCurrExecRequest(cb);
+	return ThreadFuture<Void>(cb->getSAV());
 }
 
 Version ClientProxyTransactionStub::getCommittedVersion() {
@@ -320,7 +373,7 @@ void ClientProxyAPIStub::stopNetwork() {
 }
 
 Reference<IDatabase> ClientProxyAPIStub::createDatabase(const char* clusterFilePath) {
-	Reference<ClientRPCInterface> rpcIfc;
+	Reference<IClientRPCInterface> rpcIfc;
 	if (embeddedProxy) {
 		rpcIfc = makeReference<DLRPCClient>(clusterFilePath);
 	} else {

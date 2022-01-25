@@ -28,17 +28,63 @@
 #include "flow/flow.h"
 #include "fdbclient/CoordinationInterface.h"
 #include "fdbclient/ClientProxyInterface.h"
+#include "fdbclient/ClientRPCInterface.h"
+#include "fdbclient/NativeAPI.actor.h"
+#include "fdbclient/ReadYourWrites.h"
 #include "flow/actorcompiler.h"
 
 namespace ClientProxy {
 
-struct ProxyState;
+struct ProxyRequestState;
+using ProxyRequestReference = Reference<ProxyRequestState>;
+
+struct ProxyTransaction : public ReferenceCounted<ProxyTransaction> {
+	Reference<ReadYourWritesTransaction> tx;
+	uint32_t lastExecSeqNo = 0;
+	std::unordered_map<uint32_t, ProxyRequestReference> pendingRequests;
+	std::unordered_map<uint32_t, ProxyRequestReference> activeRequests;
+};
+
+using ProxyTransactionReference = Reference<ProxyTransaction>;
+
+struct ProxyState {
+	Database db;
+	using TransactionMap = std::unordered_map<UID, ProxyTransactionReference>;
+	TransactionMap transactionMap;
+
+	ProxyState(Reference<IClusterConnectionRecord> connRecord, LocalityData clientLocality);
+
+	ProxyTransactionReference getTransaction(UID transactionID);
+
+	void releaseTransaction(UID transactionID);
+};
+
+struct ProxyRequestState : public ReferenceCounted<ProxyRequestState> {
+	enum class State { PENDING, STARTED, COMPLETED };
+
+	State st = State::PENDING;
+	ExecOperationsReference request;
+	ProxyTransactionReference proxyTransaction;
+	std::vector<Future<Void>> execActors;
+	IExecOperationsCallbackHandler* callbackHandler = nullptr;
+	IExecOperationsCallback* execCallback = nullptr;
+
+	Reference<ReadYourWritesTransaction> transaction() { return proxyTransaction->tx; }
+	void actorStarted(Future<Void> actor);
+	void sendReply(const ExecOperationsReply& reply);
+	void sendError(const Error& e);
+	void completed();
+	void cancel();
+};
 
 ProxyState* createProxyState(Reference<IClusterConnectionRecord> connRecord, LocalityData clientLocality);
 
 void destroyProxyState(ProxyState* proxyState);
 
-void handleExecOperationsRequest(ProxyState* rpcProxyData, ExecOperationsReference request);
+ProxyRequestReference handleExecOperationsRequest(ProxyState* rpcProxyData,
+                                                  ExecOperationsReference request,
+                                                  IExecOperationsCallbackHandler* callbackHandler,
+                                                  IExecOperationsCallback* cb);
 
 void releaseTransaction(ProxyState* proxyState, UID transactionID);
 

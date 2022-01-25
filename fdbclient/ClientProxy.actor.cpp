@@ -19,11 +19,10 @@
  */
 #include "fdbclient/ClientProxy.actor.h"
 #include "fdbclient/WellKnownEndpoints.h"
-#include "fdbclient/NativeAPI.actor.h"
-#include "fdbclient/ReadYourWrites.h"
 #include "flow/genericactors.actor.h"
 
 #include "flow/actorcompiler.h" // This must be the last #include.
+#include <cstddef>
 
 void ClientProxyInterface::initClientEndpoints(NetworkAddress remote) {
 	execOperations = RequestStream<ClientProxy::ExecOperationsRequest>(
@@ -36,79 +35,75 @@ void ClientProxyInterface::initServerEndpoints() {
 
 namespace ClientProxy {
 
-struct ProxyRequestState;
-using ProxyRequestReference = Reference<ProxyRequestState>;
+ProxyState::ProxyState(Reference<IClusterConnectionRecord> connRecord, LocalityData clientLocality) {
+	db = Database::createDatabase(connRecord, Database::API_VERSION_LATEST, IsInternal::False, clientLocality);
+}
 
-struct ProxyTransaction : public ReferenceCounted<ProxyTransaction> {
-	Reference<ReadYourWritesTransaction> tx;
-	uint32_t lastExecSeqNo = 0;
-	std::unordered_map<uint32_t, ProxyRequestReference> pendingRequests;
-	std::unordered_map<uint32_t, ProxyRequestReference> activeRequests;
-};
-
-using ProxyTransactionReference = Reference<ProxyTransaction>;
-
-struct ProxyState {
-	Database db;
-	using TransactionMap = std::unordered_map<UID, ProxyTransactionReference>;
-	TransactionMap transactionMap;
-
-	ProxyState(Reference<IClusterConnectionRecord> connRecord, LocalityData clientLocality) {
-		db = Database::createDatabase(connRecord, Database::API_VERSION_LATEST, IsInternal::False, clientLocality);
+ProxyTransactionReference ProxyState::getTransaction(UID transactionID) {
+	auto iter = transactionMap.find(transactionID);
+	if (iter != transactionMap.end()) {
+		return iter->second;
 	}
+	ProxyTransactionReference tx = makeReference<ProxyTransaction>();
+	transactionMap[transactionID] = tx;
+	return tx;
+}
 
-	ProxyTransactionReference getTransaction(UID transactionID) {
-		auto iter = transactionMap.find(transactionID);
-		if (iter != transactionMap.end()) {
-			return iter->second;
-		}
-		ProxyTransactionReference tx = makeReference<ProxyTransaction>();
-		transactionMap[transactionID] = tx;
-		return tx;
+void ProxyState::releaseTransaction(UID transactionID) {
+	auto iter = transactionMap.find(transactionID);
+	if (iter != transactionMap.end()) {
+		transactionMap.erase(iter);
 	}
+}
 
-	void releaseTransaction(UID transactionID) {
-		auto iter = transactionMap.find(transactionID);
-		if (iter != transactionMap.end()) {
-			transactionMap.erase(iter);
-		}
+void ProxyRequestState::actorStarted(Future<Void> actor) {
+	st = State::STARTED;
+	execActors.push_back(actor);
+	proxyTransaction->activeRequests[request->firstSeqNo] = ProxyRequestReference::addRef(this);
+}
+
+void ProxyRequestState::sendReply(const ExecOperationsReply& reply) {
+	if (callbackHandler) {
+		ASSERT(execCallback);
+		callbackHandler->sendReply(reply, execCallback);
+	} else {
+		request->reply.send(reply);
 	}
-};
+	completed();
+}
 
-struct ProxyRequestState : public ReferenceCounted<ProxyRequestState> {
-	enum class State { PENDING, STARTED, COMPLETED };
-
-	State st = State::PENDING;
-	ExecOperationsReference request;
-	ProxyTransactionReference proxyTransaction;
-	std::vector<Future<Void>> execActors;
-
-	Reference<ReadYourWritesTransaction> transaction() { return proxyTransaction->tx; }
-
-	void actorStarted(Future<Void> actor) {
-		st = State::STARTED;
-		execActors.push_back(actor);
-		proxyTransaction->activeRequests[request->firstSeqNo] = ProxyRequestReference::addRef(this);
+void ProxyRequestState::sendError(const Error& e) {
+	if (callbackHandler) {
+		ASSERT(execCallback);
+		callbackHandler->sendError(e, execCallback);
+	} else {
+		request->reply.sendError(e);
 	}
+	completed();
+}
 
-	void completed() {
-		st = State::COMPLETED;
-		auto iter = proxyTransaction->activeRequests.find(request->firstSeqNo);
-		if (iter != proxyTransaction->activeRequests.end()) {
-			proxyTransaction->activeRequests.erase(iter);
-		}
+void ProxyRequestState::completed() {
+	st = State::COMPLETED;
+	auto iter = proxyTransaction->activeRequests.find(request->firstSeqNo);
+	if (iter != proxyTransaction->activeRequests.end()) {
+		proxyTransaction->activeRequests.erase(iter);
 	}
-};
+}
+
+void ProxyRequestState::cancel() {
+	for (auto actor : execActors) {
+		actor.cancel();
+	}
+}
 
 ACTOR template <class ResultType, class T>
 Future<Void> executeAndReplyActor(ProxyRequestReference req, Future<T> f) {
 	try {
 		T result = wait(f);
-		req->request->reply.send(ExecOperationsReply{ OperationResult(ResultType{ { result } }) });
+		req->sendReply(ExecOperationsReply{ OperationResult(ResultType{ { result } }) });
 	} catch (Error& e) {
-		req->request->reply.sendError(e);
+		req->sendError(e);
 	}
-	req->completed();
 	return Void();
 }
 
@@ -135,12 +130,11 @@ void executeSetOp(const SetOp& op, ProxyRequestReference req) {
 ACTOR Future<Void> executeCommitActor(ProxyRequestReference req) {
 	try {
 		wait(req->transaction()->commit());
-		req->request->reply.send(
+		req->sendReply(
 		    ExecOperationsReply{ OperationResult(Int64Result{ { req->transaction()->getCommittedVersion() } }) });
 	} catch (Error& e) {
-		req->request->reply.sendError(e);
+		req->sendError(e);
 	}
-	req->completed();
 	return Void();
 }
 
@@ -236,7 +230,7 @@ void executeOperations(ProxyState* rpcProxyData, ProxyRequestReference req) {
 			throw client_invalid_operation();
 		}
 	} catch (Error& e) {
-		req->request->reply.sendError(e);
+		req->sendError(e);
 	}
 	req->proxyTransaction->lastExecSeqNo += req->request->operations.size();
 }
@@ -253,7 +247,27 @@ void releaseTransaction(ProxyState* proxyState, UID transactionID) {
 	proxyState->releaseTransaction(transactionID);
 }
 
-void handleExecOperationsRequest(ProxyState* rpcProxyData, ExecOperationsReference request) {
+ProxyRequestReference handleExecOperationsRequest(ProxyState* rpcProxyData,
+                                                  ExecOperationsReference request,
+                                                  IExecOperationsCallbackHandler* callbackHandler,
+                                                  IExecOperationsCallback* cb) {
+	UID transactionID(request->clientID, request->transactionID);
+	Reference<ProxyTransaction> proxyTx = rpcProxyData->getTransaction(transactionID);
+	ProxyRequestReference proxyRequest = makeReference<ProxyRequestState>();
+	proxyRequest->request = request;
+	proxyRequest->proxyTransaction = proxyTx;
+	proxyRequest->callbackHandler = callbackHandler;
+	proxyRequest->execCallback = cb;
+
+	// Requests must arrive in correct order;
+	ASSERT(proxyTx->lastExecSeqNo == request->firstSeqNo);
+
+	// Execute the current request
+	executeOperations(rpcProxyData, proxyRequest);
+	return proxyRequest;
+}
+
+void handleRemoteExecOperationsRequest(ProxyState* rpcProxyData, ExecOperationsReference request) {
 	for (uint64_t txID : request->releasedTransactions) {
 		rpcProxyData->releaseTransaction(UID(request->clientID, txID));
 	}
@@ -291,7 +305,7 @@ ACTOR Future<Void> proxyServer(ClientProxyInterface interface,
 	loop {
 		ExecOperationsRequest req = waitNext(interface.execOperations.getFuture());
 		ExecOperationsReference reqRef = makeReference<ExecOperationsRequestRefCounted>(req);
-		handleExecOperationsRequest(&proxyData, reqRef);
+		handleRemoteExecOperationsRequest(&proxyData, reqRef);
 	}
 }
 

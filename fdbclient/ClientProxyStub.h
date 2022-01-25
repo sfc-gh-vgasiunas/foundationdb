@@ -28,6 +28,8 @@
 #include <mutex>
 #include <atomic>
 
+class ExecOperationsCallbackBase;
+
 // An implementation of IDatabase that forwards API calls for execution on a client proxy
 class ClientProxyDatabaseStub : public IDatabase, public ThreadSafeReferenceCounted<ClientProxyDatabaseStub> {
 public:
@@ -44,16 +46,16 @@ public:
 	ThreadFuture<Void> forceRecoveryWithDataLoss(const StringRef& dcid) override;
 	ThreadFuture<Void> createSnapshot(const StringRef& uid, const StringRef& snapshot_command) override;
 
-	Reference<ClientRPCInterface>& getRpcInterface() { return rpcInterface; }
+	Reference<IClientRPCInterface>& getRpcInterface() { return rpcInterface; }
 
 	friend class ClientProxyTransactionStub;
 	friend class ClientProxyAPIStub;
 
 private:
 	// Internal use only
-	ClientProxyDatabaseStub(Reference<ClientRPCInterface> rpcInterface, int apiVersion);
+	ClientProxyDatabaseStub(Reference<IClientRPCInterface> rpcInterface, int apiVersion);
 
-	Reference<ClientRPCInterface> rpcInterface;
+	Reference<IClientRPCInterface> rpcInterface;
 	uint64_t clientID;
 	std::atomic<uint64_t> txCounter;
 };
@@ -128,10 +130,12 @@ public:
 	void addref() override { ThreadSafeReferenceCounted<ClientProxyTransactionStub>::addref(); }
 	void delref() override { ThreadSafeReferenceCounted<ClientProxyTransactionStub>::delref(); }
 
+	void setCommittedVersion(Version v) { committedVersion = v; }
+
 private:
 	void createExecRequest();
 	void addOperation(const ClientProxy::Operation& op);
-	ThreadFuture<ClientProxy::ExecOperationsReply> sendCurrExecRequest();
+	void sendCurrExecRequest(ExecOperationsCallbackBase* cb);
 	template <class ResType>
 	ThreadFuture<typename ResType::value_type> sendAndGetValue();
 
