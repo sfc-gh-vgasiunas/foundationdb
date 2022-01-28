@@ -25,6 +25,7 @@
 #include "fdbclient/IClientApi.h"
 #include "fdbclient/ClientProxyInterface.h"
 #include "fdbclient/ClientRPCInterface.h"
+#include "fdbclient/FDBProxyCApi.h"
 #include <mutex>
 #include <atomic>
 
@@ -159,6 +160,7 @@ public:
 	void stopNetwork() override;
 	Reference<IDatabase> createDatabase(const char* clusterFilePath) override;
 	void addNetworkThreadCompletionHook(void (*hook)(void*), void* hookParameter) override;
+	Reference<IDatabase> createDLProxyDatabase(const char* clusterFile, Reference<FDBProxyCApi> proxyApi);
 
 private:
 	friend IClientApi* getClientProxyAPI();

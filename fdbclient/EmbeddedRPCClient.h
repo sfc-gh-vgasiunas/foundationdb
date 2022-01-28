@@ -24,6 +24,7 @@
 
 #include "fdbclient/ClientRPCInterface.h"
 #include "flow/ThreadSafeQueue.h"
+#include "fdbclient/FDBProxyCApi.h"
 
 namespace ClientProxy {
 struct ProxyState;
@@ -50,36 +51,10 @@ public:
 	ThreadSafeQueue<uint64_t> releasedTransactions;
 };
 
-typedef struct FDB_future FDBFuture;
-typedef int fdb_error_t;
-
-typedef void (*SendReplyCallback)(FDBFuture* future, const void* replyBytes, int replyLen);
-typedef void (*SendErrorCallback)(FDBFuture* future, fdb_error_t error);
-typedef void (*SetProxyRequestCallback)(FDBFuture* future, ClientProxy::ProxyRequestState* proxyRequest);
-
-extern "C" {
-DLLEXPORT fdb_error_t fdb_rpc_client_create(const char* connFilename,
-                                            SendReplyCallback sendReplyCB,
-                                            SendErrorCallback sendErrorCB,
-                                            SetProxyRequestCallback setProxyReqCB,
-                                            EmbeddedRPCClient** client);
-DLLEXPORT void fdb_rpc_client_exec_request(EmbeddedRPCClient* client,
-                                           const void* requestBytes,
-                                           int requestLen,
-                                           FDBFuture* result);
-DLLEXPORT void fdb_rpc_client_release_transaction(EmbeddedRPCClient* client, uint64_t txID);
-DLLEXPORT void fdb_rpc_client_destroy(EmbeddedRPCClient* client);
-DLLEXPORT void fdb_rpc_client_cancel_request(EmbeddedRPCClient* client, ClientProxy::ProxyRequestState* proxyRequest);
-}
-
 class ExternalRPCClient : public EmbeddedRPCClient {
 public:
-	ExternalRPCClient(const std::string& connFilename,
-	                  SendReplyCallback sendReplyCB,
-	                  SendErrorCallback sendErrorCB,
-	                  SetProxyRequestCallback setProxyReqCB)
-	  : EmbeddedRPCClient(connFilename), sendReplyCB(sendReplyCB), sendErrorCB(sendErrorCB),
-	    setProxyReqCB(setProxyReqCB) {}
+	ExternalRPCClient(const std::string& connFilename, FDBProxyRequestCallbackIfc callbackIfc)
+	  : EmbeddedRPCClient(connFilename), callbackIfc(callbackIfc) {}
 
 	void sendReply(const ClientProxy::ExecOperationsReply& reply, IExecOperationsCallback* callback) override;
 
@@ -88,15 +63,13 @@ public:
 	void setProxyRequest(IExecOperationsCallback* callback, ClientProxy::ProxyRequestState* proxyReq) override;
 
 private:
-	SendReplyCallback sendReplyCB;
-	SendErrorCallback sendErrorCB;
-	SetProxyRequestCallback setProxyReqCB;
+	FDBProxyRequestCallbackIfc callbackIfc;
 };
 
 class DLRPCClient : public IClientRPCInterface {
 public:
 	static constexpr uint64_t CLIENT_ID = 1;
-	DLRPCClient(std::string connFilename);
+	DLRPCClient(std::string connFilename, Reference<FDBProxyCApi> proxyApi);
 	~DLRPCClient() override;
 	void executeOperations(ClientProxy::ExecOperationsReference request, IExecOperationsCallback* callback) override;
 	void releaseTransaction(uint64_t transaction) override;
@@ -104,7 +77,8 @@ public:
 	void cancelRequest(ClientProxy::ProxyRequestState* request) override;
 
 private:
-	EmbeddedRPCClient* impl;
+	FDBProxy* impl;
+	Reference<FDBProxyCApi> proxyApi;
 };
 
 class ClientProxyRPCStub : public IClientRPCInterface {

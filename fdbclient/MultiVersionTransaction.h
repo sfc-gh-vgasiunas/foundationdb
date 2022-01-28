@@ -26,6 +26,7 @@
 #include "fdbclient/FDBOptions.g.h"
 #include "fdbclient/FDBTypes.h"
 #include "fdbclient/IClientApi.h"
+#include "fdbclient/FDBProxyCApi.h"
 
 #include "flow/ThreadHelper.actor.h"
 
@@ -388,9 +389,12 @@ public:
 private:
 	const std::string fdbCPath;
 	const Reference<FdbCApi> api;
+	const Reference<FDBProxyCApi> proxyAPI;
+
 	const bool unlinkOnLoad;
 	int headerVersion;
 	bool networkSetup;
+	bool useEmbeddedProxy;
 
 	Mutex lock;
 	std::vector<std::pair<void (*)(void*), void*>> threadCompletionHooks;
@@ -700,6 +704,7 @@ public:
 	static MultiVersionApi* api;
 
 	Reference<ClientInfo> getLocalClient();
+	Reference<ClientInfo> getVersionDBClient();
 	void runOnExternalClients(int threadId,
 	                          std::function<void(Reference<ClientInfo>)>,
 	                          bool runOnFailedClients = false);
@@ -709,6 +714,8 @@ public:
 
 	bool callbackOnMainThread;
 	bool localClientDisabled;
+	bool useEmbeddedProxy;
+	bool useRemoteProxy;
 
 	static bool apiVersionAtLeast(int minVersion);
 

@@ -23,9 +23,12 @@
 #pragma once
 
 #include "fdbclient/IClientApi.h"
+#include "fdbclient/FDBProxyCApi.h"
 
 IClientApi* getLocalClientAPI();
 
 IClientApi* getClientProxyAPI();
+
+Reference<IDatabase> createDLProxyDatabase(const char* clusterFile, Reference<FDBProxyCApi> proxyApi);
 
 #endif

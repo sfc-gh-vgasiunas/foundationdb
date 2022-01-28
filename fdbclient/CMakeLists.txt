@@ -62,6 +62,7 @@ set(FDBCLIENT_SRCS
   EmbeddedRPCClient.h
   EventTypes.actor.h
   FDBOptions.h
+  FDBProxyCApi.h
   FDBTypes.cpp
   FDBTypes.h
   FluentDSampleIngestor.cpp

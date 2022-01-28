@@ -126,7 +126,7 @@ void EmbeddedRPCClient::setProxyRequest(IExecOperationsCallback* callback, Proxy
 	callback->setProxyRequest(proxyRequest);
 }
 
-/* ------------------------------------------------x--------------------------------
+/* ---------------------------------------------------------------------------------
  * External local proxy stub
  * --------------------------------------------------------------------------------- */
 
@@ -134,18 +134,22 @@ void ExternalRPCClient::sendReply(const ExecOperationsReply& reply, IExecOperati
 	ObjectWriter ow(Unversioned());
 	ow.serialize(reply);
 	StringRef str = ow.toStringRef();
-	sendReplyCB((FDBFuture*)result, str.begin(), str.size());
+	callbackIfc.sendReply((FDBProxyRequestCallback*)result, str.begin(), str.size());
 }
 
 void ExternalRPCClient::sendError(const Error& e, IExecOperationsCallback* result) {
-	sendErrorCB((FDBFuture*)result, e.code());
+	callbackIfc.sendError((FDBProxyRequestCallback*)result, e.code());
 }
 
 void ExternalRPCClient::setProxyRequest(IExecOperationsCallback* callback, ProxyRequestState* proxyReq) {
-	setProxyReqCB((FDBFuture*)callback, proxyReq);
+	callbackIfc.setProxyRequest((FDBProxyRequestCallback*)callback, (FDBProxyRequest*)proxyReq);
 }
 
-void DLRPCClient_sendReply(FDBFuture* f, const void* bytes, int size) {
+/* ---------------------------------------------------------------------------------
+ * Dynamically loaded proxy C API wrapper
+ * --------------------------------------------------------------------------------- */
+
+void DLRPCClient_sendReply(FDBProxyRequestCallback* f, const void* bytes, int size) {
 	try {
 		ObjectReader rd((const uint8_t*)bytes, Unversioned());
 		ExecOperationsReply reply;
@@ -153,90 +157,92 @@ void DLRPCClient_sendReply(FDBFuture* f, const void* bytes, int size) {
 		IExecOperationsCallback* sav = ((IExecOperationsCallback*)f);
 		sav->sendReply(reply);
 	} catch (Error& e) {
-		fprintf(stderr, "fdb_rpc_client_exec_request: Unexpected FDB error %d\n", e.code());
+		fprintf(stderr, "DLRPCClient_sendReply: Unexpected FDB error %d\n", e.code());
 		abort();
 	} catch (...) {
-		fprintf(stderr, "fdb_rpc_client_exec_request: Unexpected FDB unknown error\n");
+		fprintf(stderr, "fdb_proxy_exec_request: Unexpected FDB unknown error\n");
 		abort();
 	}
 }
 
-void DLRPCClient_sendError(FDBFuture* f, fdb_error_t err) {
+void DLRPCClient_sendError(FDBProxyRequestCallback* f, fdb_error_t err) {
 	IExecOperationsCallback* sav = ((IExecOperationsCallback*)f);
 	sav->sendError(Error(err));
 }
 
-void DLRPCClient_setProxyRequest(FDBFuture* f, ClientProxy::ProxyRequestState* proxyRequest) {
+void DLRPCClient_setProxyRequest(FDBProxyRequestCallback* f, FDBProxyRequest* proxyRequest) {
 	IExecOperationsCallback* sav = ((IExecOperationsCallback*)f);
-	sav->setProxyRequest(proxyRequest);
+	sav->setProxyRequest((ClientProxy::ProxyRequestState*)proxyRequest);
 }
 
-DLRPCClient::DLRPCClient(std::string connFilename) {
-	fdb_error_t err = fdb_rpc_client_create(
-	    connFilename.c_str(), DLRPCClient_sendReply, DLRPCClient_sendError, DLRPCClient_setProxyRequest, &impl);
+DLRPCClient::DLRPCClient(std::string connFilename, Reference<FDBProxyCApi> proxyApi) : proxyApi(proxyApi) {
+	FDBProxyRequestCallbackIfc callbackIfc{ DLRPCClient_sendReply, DLRPCClient_sendError, DLRPCClient_setProxyRequest };
+	fdb_error_t err = proxyApi->createProxy(connFilename.c_str(), callbackIfc, &impl);
 	if (err != error_code_success) {
 		throw Error(err);
 	}
 }
 
 DLRPCClient::~DLRPCClient() {
-	fdb_rpc_client_destroy(impl);
+	proxyApi->destroyProxy(impl);
 }
 
 void DLRPCClient::executeOperations(ExecOperationsReference request, IExecOperationsCallback* result) {
 	ObjectWriter ow(Unversioned());
 	ow.serialize(*(ExecOperationsReqInput*)request.getPtr());
 	StringRef str = ow.toStringRef();
-	fdb_rpc_client_exec_request(impl, str.begin(), str.size(), (FDBFuture*)result);
+	proxyApi->execRequest(impl, str.begin(), str.size(), (FDBProxyRequestCallback*)result);
 }
 
 void DLRPCClient::releaseTransaction(uint64_t transaction) {
-	fdb_rpc_client_release_transaction(impl, transaction);
+	proxyApi->releaseTransaction(impl, transaction);
 }
 
 void DLRPCClient::cancelRequest(ClientProxy::ProxyRequestState* proxyRequest) {
-	fdb_rpc_client_cancel_request(impl, proxyRequest);
+	proxyApi->cancelRequest(impl, (FDBProxyRequest*)proxyRequest);
 }
 
-extern "C" DLLEXPORT fdb_error_t fdb_rpc_client_create(const char* connFilename,
-                                                       SendReplyCallback replyCB,
-                                                       SendErrorCallback errorCB,
-                                                       SetProxyRequestCallback setProxyReqCB,
-                                                       EmbeddedRPCClient** client) {
+/* ---------------------------------------------------------------------------------
+ * Proxy C API
+ * --------------------------------------------------------------------------------- */
+
+extern "C" DLLEXPORT fdb_error_t fdb_proxy_create(const char* connFilename,
+                                                  FDBProxyRequestCallbackIfc callbackIfc,
+                                                  FDBProxy** client) {
 	try {
-		*client = new ExternalRPCClient(connFilename, replyCB, errorCB, setProxyReqCB);
+		*client = (FDBProxy*)new ExternalRPCClient(connFilename, callbackIfc);
 	} catch (Error& e) {
 		return e.code();
 	}
 	return error_code_success;
 }
 
-extern "C" DLLEXPORT void fdb_rpc_client_exec_request(EmbeddedRPCClient* client,
-                                                      const void* requestBytes,
-                                                      int requestLen,
-                                                      FDBFuture* result) {
+extern "C" DLLEXPORT void fdb_proxy_exec_request(FDBProxy* client,
+                                                 const void* requestBytes,
+                                                 int requestLen,
+                                                 FDBProxyRequestCallback* callback) {
 	try {
 		ObjectReader rd((const uint8_t*)requestBytes, Unversioned());
 		ExecOperationsReference ref = makeReference<ExecOperationsRequestRefCounted>();
 		rd.deserialize(*(ExecOperationsReqInput*)ref.getPtr());
-		client->executeOperations(ref, (IExecOperationsCallback*)result);
+		((ExternalRPCClient*)client)->executeOperations(ref, (IExecOperationsCallback*)callback);
 	} catch (Error& e) {
-		fprintf(stderr, "fdb_rpc_client_exec_request: Unexpected FDB error %d\n", e.code());
+		fprintf(stderr, "fdb_proxy_exec_request: Unexpected FDB error %d\n", e.code());
 		abort();
 	} catch (...) {
-		fprintf(stderr, "fdb_rpc_client_exec_request: Unexpected FDB unknown error\n");
+		fprintf(stderr, "fdb_proxy_exec_request: Unexpected FDB unknown error\n");
 		abort();
 	}
 }
 
-extern "C" DLLEXPORT void fdb_rpc_client_release_transaction(EmbeddedRPCClient* client, uint64_t txID) {
-	client->releaseTransaction(txID);
+extern "C" DLLEXPORT void fdb_proxy_release_transaction(FDBProxy* client, uint64_t txID) {
+	((ExternalRPCClient*)client)->releaseTransaction(txID);
 }
 
-extern "C" DLLEXPORT void fdb_rpc_client_destroy(EmbeddedRPCClient* client) {
-	delete client;
+extern "C" DLLEXPORT void fdb_proxy_destroy(FDBProxy* client) {
+	delete ((ExternalRPCClient*)client);
 }
 
-extern "C" DLLEXPORT void fdb_rpc_client_cancel_request(EmbeddedRPCClient* client, ProxyRequestState* proxyRequest) {
-	client->cancelRequest(proxyRequest);
+extern "C" DLLEXPORT void fdb_proxy_cancel_request(FDBProxy* client, FDBProxyRequest* proxyRequest) {
+	((ExternalRPCClient*)client)->cancelRequest((ProxyRequestState*)proxyRequest);
 }

@@ -492,7 +492,8 @@ void loadClientFunction(T* fp, void* lib, std::string libPath, const char* funct
 }
 
 DLApi::DLApi(std::string fdbCPath, bool unlinkOnLoad)
-  : fdbCPath(fdbCPath), api(new FdbCApi()), unlinkOnLoad(unlinkOnLoad), networkSetup(false) {}
+  : fdbCPath(fdbCPath), api(new FdbCApi()), proxyAPI(new FDBProxyCApi()), unlinkOnLoad(unlinkOnLoad),
+    networkSetup(false), useEmbeddedProxy(false) {}
 
 // Loads client API functions (definitions are in FdbCApi struct)
 void DLApi::init() {
@@ -629,6 +630,13 @@ void DLApi::init() {
 	loadClientFunction(&api->clusterCreateDatabase, lib, fdbCPath, "fdb_cluster_create_database", headerVersion < 610);
 	loadClientFunction(&api->clusterDestroy, lib, fdbCPath, "fdb_cluster_destroy", headerVersion < 610);
 	loadClientFunction(&api->futureGetCluster, lib, fdbCPath, "fdb_future_get_cluster", headerVersion < 610);
+
+	loadClientFunction(&proxyAPI->createProxy, lib, fdbCPath, "fdb_proxy_create", headerVersion >= 710);
+	loadClientFunction(&proxyAPI->execRequest, lib, fdbCPath, "fdb_proxy_exec_request", headerVersion >= 710);
+	loadClientFunction(
+	    &proxyAPI->releaseTransaction, lib, fdbCPath, "fdb_proxy_release_transaction", headerVersion >= 710);
+	loadClientFunction(&proxyAPI->destroyProxy, lib, fdbCPath, "fdb_proxy_destroy", headerVersion >= 710);
+	loadClientFunction(&proxyAPI->cancelRequest, lib, fdbCPath, "fdb_proxy_cancel_request", headerVersion >= 710);
 }
 
 void DLApi::selectApiVersion(int apiVersion) {
@@ -650,6 +658,13 @@ const char* DLApi::getClientVersion() {
 }
 
 void DLApi::setNetworkOption(FDBNetworkOptions::Option option, Optional<StringRef> value) {
+	if (option == FDBNetworkOptions::PROXY_URL) {
+		if (value.present()) {
+			if (value.get().toString() == "embedded") {
+				useEmbeddedProxy = true;
+			}
+		}
+	}
 	throwIfError(api->setNetworkOption(static_cast<FDBNetworkOption>(option),
 	                                   value.present() ? value.get().begin() : nullptr,
 	                                   value.present() ? value.get().size() : 0));
@@ -722,9 +737,13 @@ Reference<IDatabase> DLApi::createDatabase609(const char* clusterFilePath) {
 
 Reference<IDatabase> DLApi::createDatabase(const char* clusterFilePath) {
 	if (headerVersion >= 610) {
-		FdbCApi::FDBDatabase* db;
-		throwIfError(api->createDatabase(clusterFilePath, &db));
-		return Reference<IDatabase>(new DLDatabase(api, db));
+		if (useEmbeddedProxy) {
+			return createDLProxyDatabase(clusterFilePath, proxyAPI);
+		} else {
+			FdbCApi::FDBDatabase* db;
+			throwIfError(api->createDatabase(clusterFilePath, &db));
+			return Reference<IDatabase>(new DLDatabase(api, db));
+		}
 	} else {
 		return DLApi::createDatabase609(clusterFilePath);
 	}
@@ -1481,7 +1500,8 @@ void MultiVersionDatabase::DatabaseState::updateDatabase(Reference<IDatabase> ne
 		} else {
 			// For older clients that don't have an API to get the protocol version, we have to monitor it locally
 			try {
-				versionMonitorDb = MultiVersionApi::api->getLocalClient()->api->createDatabase(clusterFilePath.c_str());
+				versionMonitorDb =
+				    MultiVersionApi::api->getVersionDBClient()->api->createDatabase(clusterFilePath.c_str());
 			} catch (Error& e) {
 				// We can't create a new database to monitor the cluster version. This means we will continue using the
 				// previous one, which should hopefully continue to work.
@@ -1494,7 +1514,7 @@ void MultiVersionDatabase::DatabaseState::updateDatabase(Reference<IDatabase> ne
 		// We don't have a database connection, so use the local client to monitor the protocol version
 		db = Reference<IDatabase>();
 		try {
-			versionMonitorDb = MultiVersionApi::api->getLocalClient()->api->createDatabase(clusterFilePath.c_str());
+			versionMonitorDb = MultiVersionApi::api->getVersionDBClient()->api->createDatabase(clusterFilePath.c_str());
 		} catch (Error& e) {
 			// We can't create a new database to monitor the cluster version. This means we will continue using the
 			// previous one, which should hopefully continue to work.
@@ -1656,6 +1676,14 @@ void MultiVersionApi::runOnExternalClients(int threadIdx,
 }
 
 Reference<ClientInfo> MultiVersionApi::getLocalClient() {
+	if (useEmbeddedProxy) {
+		return proxyClient;
+	} else {
+		return localClient;
+	}
+}
+
+Reference<ClientInfo> MultiVersionApi::getVersionDBClient() {
 	return localClient;
 }
 
@@ -1923,7 +1951,12 @@ void MultiVersionApi::setNetworkOptionInternal(FDBNetworkOptions::Option option,
 	} else if (option == FDBNetworkOptions::PROXY_URL) {
 		validateOption(value, true, false, false);
 		proxyUrl = value.get().toString();
-		proxyClient->api->setNetworkOption(option, value);
+		if (proxyUrl == "embedded") {
+			useEmbeddedProxy = true;
+		} else {
+			useRemoteProxy = true;
+		}
+		forwardOption = true;
 	} else {
 		forwardOption = true;
 	}
@@ -2122,7 +2155,7 @@ Reference<IDatabase> MultiVersionApi::createDatabase(const char* clusterFilePath
 		throw network_not_setup();
 	}
 
-	if (!proxyUrl.empty()) {
+	if (useRemoteProxy) {
 		lock.leave();
 		ASSERT(proxyClient);
 		return proxyClient->api->createDatabase(clusterFilePath);
@@ -2130,27 +2163,28 @@ Reference<IDatabase> MultiVersionApi::createDatabase(const char* clusterFilePath
 
 	std::string clusterFile(clusterFilePath);
 
+	int threadIdx = 0;
 	if (localClientDisabled) {
 		ASSERT(!bypassMultiClientApi);
 
-		int threadIdx = nextThread;
+		threadIdx = nextThread;
 		nextThread = (nextThread + 1) % threadCount;
-		lock.leave();
-
-		Reference<IDatabase> localDb = localClient->api->createDatabase(clusterFilePath);
-		return Reference<IDatabase>(
-		    new MultiVersionDatabase(this, threadIdx, clusterFile, Reference<IDatabase>(), localDb));
+	} else {
+		ASSERT_LE(threadCount, 1);
 	}
 
 	lock.leave();
 
-	ASSERT_LE(threadCount, 1);
-
-	Reference<IDatabase> localDb = localClient->api->createDatabase(clusterFilePath);
 	if (bypassMultiClientApi) {
-		return localDb;
+		if (useEmbeddedProxy) {
+			return proxyClient->api->createDatabase(clusterFilePath);
+		} else {
+			return localClient->api->createDatabase(clusterFilePath);
+		}
 	} else {
-		return Reference<IDatabase>(new MultiVersionDatabase(this, 0, clusterFile, Reference<IDatabase>(), localDb));
+		Reference<IDatabase> localDb = localClient->api->createDatabase(clusterFilePath);
+		return Reference<IDatabase>(
+		    new MultiVersionDatabase(this, threadIdx, clusterFile, Reference<IDatabase>(), localDb));
 	}
 }
 
@@ -2277,7 +2311,8 @@ void MultiVersionApi::loadEnvironmentVariableNetworkOptions() {
 
 MultiVersionApi::MultiVersionApi()
   : callbackOnMainThread(true), localClientDisabled(false), networkStartSetup(false), networkSetup(false),
-    bypassMultiClientApi(false), externalClient(false), apiVersion(0), threadCount(0), envOptionsLoaded(false) {}
+    bypassMultiClientApi(false), externalClient(false), apiVersion(0), threadCount(0), envOptionsLoaded(false),
+    useEmbeddedProxy(false), useRemoteProxy(false) {}
 
 MultiVersionApi* MultiVersionApi::api = new MultiVersionApi();
 

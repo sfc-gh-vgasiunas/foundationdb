@@ -31,3 +31,7 @@ IClientApi* getClientProxyAPI() {
 	static IClientApi* api = new ClientProxyAPIStub();
 	return api;
 }
+
+Reference<IDatabase> createDLProxyDatabase(const char* clusterFile, Reference<FDBProxyCApi> proxyApi) {
+	return ((ClientProxyAPIStub*)getClientProxyAPI())->createDLProxyDatabase(clusterFile, proxyApi);
+}
