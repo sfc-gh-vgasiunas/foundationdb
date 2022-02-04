@@ -394,7 +394,7 @@ private:
 	const bool unlinkOnLoad;
 	int headerVersion;
 	bool networkSetup;
-	bool useEmbeddedProxy;
+	bool useProxyAPI;
 
 	Mutex lock;
 	std::vector<std::pair<void (*)(void*), void*>> threadCompletionHooks;

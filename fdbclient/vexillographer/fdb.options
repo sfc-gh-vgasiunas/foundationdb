@@ -118,6 +118,8 @@ description is not currently required but encouraged.
     <Option name="proxy_url" code="66"
             paramType="String" paramDescription="client proxy URL host:port"
             description="Connect to the cluster over the specified client proxy." />
+    <Option name="use_proxy_api" code="67"
+            description="Use proxy C API to communicate to the external client library." />
     <Option name="disable_client_statistics_logging" code="70"
             description="Disables logging of client statistics, such as sampled transaction activity." />
     <Option name="enable_slow_task_profiling" code="71"

@@ -119,7 +119,11 @@ void EmbeddedRPCClient::sendError(const Error& e, IExecOperationsCallback* resul
 }
 
 void EmbeddedRPCClient::cancelRequest(ProxyRequestState* proxyRequest) {
-	onMainThreadVoid([proxyRequest]() { proxyRequest->cancel(); });
+	ASSERT(proxyRequest != nullptr);
+	onMainThreadVoid([proxyRequest]() {
+		proxyRequest->cancel();
+		proxyRequest->delref();
+	});
 }
 
 void EmbeddedRPCClient::setProxyRequest(IExecOperationsCallback* callback, ProxyRequestState* proxyRequest) {

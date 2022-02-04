@@ -21,6 +21,7 @@
 #include "fdbclient/ClientProxyStub.h"
 #include "flow/IRandom.h"
 #include "fdbclient/EmbeddedRPCClient.h"
+#include "flow/ThreadHelper.actor.g.h"
 
 using namespace ClientProxy;
 
@@ -60,7 +61,9 @@ double ClientProxyDatabaseStub::getMainThreadBusyness() {
 // If an expected version is given, the future won't return until the protocol version is different than expected
 // Note: this will never return if the server is running a protocol from FDB 5.0 or older
 ThreadFuture<ProtocolVersion> ClientProxyDatabaseStub::getServerProtocol(Optional<ProtocolVersion> expectedVersion) {
-	UNIMPLEMENTED_OPERATION();
+	auto sav = new ThreadSingleAssignmentVar<ProtocolVersion>();
+	sav->send(currentProtocolVersion);
+	return ThreadFuture<ProtocolVersion>(sav);
 }
 
 ClientProxyDatabaseStub::ClientProxyDatabaseStub(Reference<IClientRPCInterface> rpcInterface, int apiVersion)
@@ -103,7 +106,12 @@ public:
 	void setProxyRequest(ClientProxy::ProxyRequestState* proxyRequest) override { this->proxyRequest = proxyRequest; }
 	ClientProxy::ProxyRequestState* getProxyRequest() override { return proxyRequest; }
 	void setCancel(Future<Void>&& cancel) override { sav->setCancel(std::move(cancel)); }
-	void cancelProxyRequest() override { clientIfc->cancelRequest(proxyRequest); }
+	void cancelProxyRequest() override {
+		if (proxyRequest != nullptr) {
+			clientIfc->cancelRequest(proxyRequest);
+			proxyRequest = nullptr;
+		}
+	}
 	void setClientInterface(Reference<IClientRPCInterface> clientIfc) { this->clientIfc = clientIfc; }
 
 	ThreadSingleAssignmentVarBase* sav;
