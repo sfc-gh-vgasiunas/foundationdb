@@ -1491,21 +1491,17 @@ void MultiVersionDatabase::DatabaseState::updateDatabase(Reference<IDatabase> ne
 
 		optionLock.leave();
 
-		if (dbProtocolVersion.get().hasStableInterfaces() && db) {
-			versionMonitorDb = db;
-		} else {
-			// For older clients that don't have an API to get the protocol version, we have to monitor it locally
-			try {
-				versionMonitorDb =
-				    MultiVersionApi::api->getVersionDBClient()->api->createDatabase(clusterFilePath.c_str());
-			} catch (Error& e) {
-				// We can't create a new database to monitor the cluster version. This means we will continue using the
-				// previous one, which should hopefully continue to work.
-				TraceEvent(SevWarnAlways, "FailedToCreateDatabaseForVersionMonitoring")
-				    .detail("ClusterFilePath", clusterFilePath)
-				    .error(e);
-			}
+		// For older clients that don't have an API to get the protocol version, we have to monitor it locally
+		try {
+			versionMonitorDb = MultiVersionApi::api->getVersionDBClient()->api->createDatabase(clusterFilePath.c_str());
+		} catch (Error& e) {
+			// We can't create a new database to monitor the cluster version. This means we will continue using the
+			// previous one, which should hopefully continue to work.
+			TraceEvent(SevWarnAlways, "FailedToCreateDatabaseForVersionMonitoring")
+			    .detail("ClusterFilePath", clusterFilePath)
+			    .error(e);
 		}
+
 	} else {
 		// We don't have a database connection, so use the local client to monitor the protocol version
 		db = Reference<IDatabase>();
