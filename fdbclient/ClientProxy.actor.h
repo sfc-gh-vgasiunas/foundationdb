@@ -75,6 +75,7 @@ struct ProxyRequestState : public ReferenceCounted<ProxyRequestState> {
 	void sendError(const Error& e);
 	void completed();
 	void cancel();
+	bool isCompleted() { return st == State::COMPLETED; }
 };
 
 ProxyState* createProxyState(Reference<IClusterConnectionRecord> connRecord, LocalityData clientLocality);

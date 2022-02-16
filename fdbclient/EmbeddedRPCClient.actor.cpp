@@ -102,7 +102,9 @@ void EmbeddedRPCClient::executeOperations(ExecOperationsReference request, IExec
 		}
 		ProxyRequestReference proxyReq =
 		    handleExecOperationsRequest(client->proxyState, request, client.getPtr(), result);
-		client->setProxyRequest(result, proxyReq.extractPtr());
+		if (proxyReq->isCompleted()) {
+			client->setProxyRequest(result, proxyReq.extractPtr());
+		}
 	});
 }
 
